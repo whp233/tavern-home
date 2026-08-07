@@ -681,7 +681,7 @@ export default function StudyPage() {
           </div>
           <div className="sty-rail-brand">
             <div className="serc" style={{ fontSize: 19, color: 'var(--ink-deep)', lineHeight: 1.1 }}>书房</div>
-            <div className="ser" style={{ fontSize: 9.5, letterSpacing: 2, color: 'var(--ink2)', marginTop: 4 }}>STUDY</div>
+            <div className="ser" style={{ fontSize: 9.5, letterSpacing: 2, color: 'var(--ink2)', marginTop: 4 }}>书斋</div>
           </div>
           <div className="sty-rail-doors">
             {RAIL_DOORS.map((d) => {
@@ -742,7 +742,7 @@ export default function StudyPage() {
                     >
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
                         <span className="serc" style={{ fontSize: 14.5, color: 'var(--ink-deep)' }}>{r.title}</span>
-                        {typeof r.score === 'number' && <span className="mono" style={{ fontSize: 11, color: 'var(--ink2)' }}>score {r.score.toFixed(2)}</span>}
+                        {typeof r.score === 'number' && <span className="mono" style={{ fontSize: 11, color: 'var(--ink2)' }}>匹配度 {r.score.toFixed(2)}</span>}
                       </div>
                       <div style={{ fontSize: 12, color: 'var(--ink2)', marginTop: 3 }}>
                         {r.project} · {CATEGORY_LABEL[r.category] || r.category}

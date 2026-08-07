@@ -1655,14 +1655,14 @@ function RegexTab({ base, envOk, onRegexChanged }: { base: string; envOk: boolea
           <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
             {/* 正则输入永远当不可信文本展示(家规)——纯文本渲染,不用 dangerouslySetInnerHTML */}
             <div>
-              <div style={{ fontSize: 10, color: 'var(--ink2)', marginBottom: 2 }}>find</div>
+              <div style={{ fontSize: 10, color: 'var(--ink2)', marginBottom: 2 }}>查找(find)</div>
               <pre style={{ fontFamily: 'ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace', fontSize: 11.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 100, overflowY: 'auto', background: 'var(--scale-0)', borderRadius: 8, padding: '6px 8px', margin: 0, color: 'var(--ink-body)' }}>{row.find || '（空)'}</pre>
             </div>
             <div>
-              <div style={{ fontSize: 10, color: 'var(--ink2)', marginBottom: 2 }}>replace</div>
+              <div style={{ fontSize: 10, color: 'var(--ink2)', marginBottom: 2 }}>替换(replace)</div>
               <pre style={{ fontFamily: 'ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace', fontSize: 11.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 100, overflowY: 'auto', background: 'var(--scale-0)', borderRadius: 8, padding: '6px 8px', margin: 0, color: 'var(--ink-body)' }}>{row.replace || '（空)'}</pre>
             </div>
-            <div style={{ fontSize: 11, color: 'var(--ink2)' }}>flags：{row.flags || '（无)'}</div>
+            <div style={{ fontSize: 11, color: 'var(--ink2)' }}>标志(flags)：{row.flags || '（无)'}</div>
           </div>
         )}
       </div>
@@ -2243,12 +2243,12 @@ function ImportTab({ base, envOk, project, onRegexChanged }: { base: string; env
         }}
       />
       <ImportPicker
-        label="② worlds JSON"
+        label="② 世界书JSON"
         hint={`ST 世界书/角色卡导出文件——落进当前项目「${project}」的世界书(备用口,主口是从书架挑)`}
         onImport={async (json) => postImport('/api/oc/desk/import/worlds', { ...json, project })}
       />
       <ImportPicker
-        label="③ settings JSON"
+        label="③ 设置JSON"
         hint="酒馆 settings.json——只抽全局正则+正则白名单+Horae总结模板,凭据类字段全洗盘不落库"
         onImport={async (json) => postImport('/api/oc/desk/import/settings', json)}
       />

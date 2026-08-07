@@ -3806,7 +3806,7 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
           <button className="serc pill" onClick={leaveToShelfFromList} style={pillStyle}>← 书架</button>
           <div>
             <div className="serc" style={{ fontSize: 24, color: 'var(--ink-deep)', lineHeight: 1 }}>打字桌</div>
-            <div className="ser" style={{ fontSize: 11, letterSpacing: 2.5, color: 'var(--ink2)', marginTop: 3 }}>TYPING DESK · STUDY</div>
+            <div className="ser" style={{ fontSize: 11, letterSpacing: 2.5, color: 'var(--ink2)', marginTop: 3 }}>打字桌 · 书房</div>
           </div>
           <button
             className="serc"

@@ -429,7 +429,7 @@ export default function ChaptersStudio({ base, envOk, project, onEditorOpenChang
                 />
               </div>
               <div style={{ marginTop: 14 }}>
-                <div style={labelStyle}>检索gist(可选)</div>
+                <div style={labelStyle}>检索摘要(可选)</div>
                 <textarea
                   value={f.summary}
                   onChange={(e) => setF({ ...f, summary: e.target.value })}

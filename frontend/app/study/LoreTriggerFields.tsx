@@ -101,12 +101,12 @@ export function LoreTriggerFields({ value, onChange }: {
           <button type="button" onClick={() => setShowAdvanced((v) => !v)} style={{ ...btnGhostStyle, fontSize: 11.5 }}>{showAdvanced ? '收起酒馆高级字段 ▲' : '酒馆高级字段（可选）▼'}</button>
           {showAdvanced && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginTop: 8 }}>
-              <textarea value={value.fields.description || ''} onChange={(e) => onChange({ fields: { ...value.fields, description: e.target.value } })} placeholder="Description（留空则自动使用上面的完整正文）" style={{ ...inputStyle, minHeight: 70, resize: 'vertical' }} />
-              <textarea value={value.fields.personality || ''} onChange={(e) => onChange({ fields: { ...value.fields, personality: e.target.value } })} placeholder="Personality（可选）" style={{ ...inputStyle, minHeight: 58, resize: 'vertical' }} />
-              <textarea value={value.fields.scenario || ''} onChange={(e) => onChange({ fields: { ...value.fields, scenario: e.target.value } })} placeholder="Scenario（可选）" style={{ ...inputStyle, minHeight: 58, resize: 'vertical' }} />
-              <textarea value={value.fields.mes_example || ''} onChange={(e) => onChange({ fields: { ...value.fields, mes_example: e.target.value } })} placeholder="Example Messages（可选）" style={{ ...inputStyle, minHeight: 70, resize: 'vertical' }} />
-              <textarea value={value.fields.main_prompt || ''} onChange={(e) => onChange({ fields: { ...value.fields, main_prompt: e.target.value } })} placeholder="角色 Main Prompt 覆盖（预留）" style={{ ...inputStyle, minHeight: 58, resize: 'vertical' }} />
-              <textarea value={value.fields.post_history_instructions || ''} onChange={(e) => onChange({ fields: { ...value.fields, post_history_instructions: e.target.value } })} placeholder="角色 Post-History Instructions（预留）" style={{ ...inputStyle, minHeight: 58, resize: 'vertical' }} />
+              <textarea value={value.fields.description || ''} onChange={(e) => onChange({ fields: { ...value.fields, description: e.target.value } })} placeholder="正文描述（留空则自动使用上面的完整正文）" style={{ ...inputStyle, minHeight: 70, resize: 'vertical' }} />
+              <textarea value={value.fields.personality || ''} onChange={(e) => onChange({ fields: { ...value.fields, personality: e.target.value } })} placeholder="人物性格（可选）" style={{ ...inputStyle, minHeight: 58, resize: 'vertical' }} />
+              <textarea value={value.fields.scenario || ''} onChange={(e) => onChange({ fields: { ...value.fields, scenario: e.target.value } })} placeholder="场景（可选）" style={{ ...inputStyle, minHeight: 58, resize: 'vertical' }} />
+              <textarea value={value.fields.mes_example || ''} onChange={(e) => onChange({ fields: { ...value.fields, mes_example: e.target.value } })} placeholder="示例对话（可选）" style={{ ...inputStyle, minHeight: 70, resize: 'vertical' }} />
+              <textarea value={value.fields.main_prompt || ''} onChange={(e) => onChange({ fields: { ...value.fields, main_prompt: e.target.value } })} placeholder="角色主提示词覆盖（预留）" style={{ ...inputStyle, minHeight: 58, resize: 'vertical' }} />
+              <textarea value={value.fields.post_history_instructions || ''} onChange={(e) => onChange({ fields: { ...value.fields, post_history_instructions: e.target.value } })} placeholder="角色后历史指令（预留）" style={{ ...inputStyle, minHeight: 58, resize: 'vertical' }} />
             </div>
           )}
         </div>
