@@ -2083,6 +2083,116 @@ function CharacterCardImportPicker({ project, postImport }: {
   );
 }
 
+// ST JSONL 聊天记录导入(⑥号口):聊天记录 = 每行一个消息对象(无头部行)的 JSONL,导成一个新写作窗
+// + 把消息按序落成楼层。建窗必须挂配方(recipe_id)——新窗要种 SEED_TIMELINE_STATE 且装配按窗口
+// 配方走,所以这里多一个「建到哪个配方」下拉(照 regexPresets 的拉取模式)。收据照角色卡口:
+// 成功横幅 + floor_count + warnings 逐条列出。
+function ChatJsonlImportPicker({ base, envOk, project, postImport }: {
+  base: string; envOk: boolean; project: string;
+  postImport: (path: string, body: any) => Promise<any>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [receipt, setReceipt] = useState<any>(null);
+  const [recipeId, setRecipeId] = useState('');
+  const [title, setTitle] = useState('');
+  const [recipes, setRecipes] = useState<Recipe[]>([]);
+  const [recipesLoading, setRecipesLoading] = useState(true);
+  const [recipesError, setRecipesError] = useState('');
+
+  useEffect(() => {
+    if (!envOk) { setRecipesError('环境变量没配好'); setRecipesLoading(false); return; }
+    let cancelled = false;
+    (async () => {
+      setRecipesLoading(true); setRecipesError('');
+      try {
+        const res = await fetch(`${base}/api/oc/desk/recipes`);
+        const d = await res.json().catch(() => null);
+        if (!res.ok || !d || d.success !== true) throw new Error(d?.error || '配方翻不出来');
+        if (cancelled) return;
+        const list: Recipe[] = Array.isArray(d.recipes) ? d.recipes : [];
+        setRecipes(list);
+        // 配方全桌通用,不过滤 project;默认选中第一个,让"建到哪扇窗"开箱即用
+        setRecipeId((prev) => prev || list[0]?.id || '');
+      } catch (e: any) {
+        if (!cancelled) setRecipesError(e.message || '配方翻不出来');
+      } finally {
+        if (!cancelled) setRecipesLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [base, envOk]);
+
+  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = ''; // 同名文件也能再选一次
+    if (file.size > IMPORT_FILE_MAX_BYTES) { setError('文件过大(超过 16MB)'); return; }
+    // 显式快照当时选中的配方/标题——不靠"这个闭包反正只读一次"这种隐式假设(照 regexTarget 快照口径)
+    const recipeSnapshot = recipeId;
+    if (!recipeSnapshot) { setError('先在上面的下拉里选一个配方(聊天记录要建到哪扇窗)'); return; }
+    const titleSnapshot = title.trim();
+    setBusy(true); setError(''); setReceipt(null);
+    try {
+      const text = await file.text();
+      const r = await postImport('/api/oc/desk/import/chat', {
+        project,
+        recipe_id: recipeSnapshot,
+        title: titleSnapshot || file.name.replace(/\.(jsonl|json)$/i, ''),
+        raw: text,
+      });
+      setReceipt(r);
+    } catch (err: any) {
+      setError(err.message || '导入失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ ...cardStyle, padding: '16px 18px', marginBottom: 16 }}>
+      <div style={{ fontSize: 14, color: 'var(--ink-deep)', marginBottom: 4 }}>⑥ 聊天记录JSONL</div>
+      <div style={{ fontSize: 11.5, color: 'var(--ink2)', marginBottom: 12 }}>
+        {`SillyTavern 聊天记录(JSONL,每行一条消息,无头部行)——导成一个新写作窗,消息按序落成楼层,swipes 候选版本一并带上`}
+      </div>
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ fontSize: 11, color: 'var(--ink2)', marginBottom: 4 }}>建到哪个配方</div>
+        {recipesLoading ? (
+          <div style={{ fontSize: 11.5, color: 'var(--ink2)' }}>正在翻配方…</div>
+        ) : recipesError ? (
+          <div style={{ fontSize: 11.5, color: errColor }}>配方翻不出来：{recipesError}</div>
+        ) : recipes.length === 0 ? (
+          <div style={{ fontSize: 11.5, color: errColor }}>还没有配方——先去「积木/配方」页建一个再导聊天记录</div>
+        ) : (
+          <select value={recipeId} onChange={(e) => setRecipeId(e.target.value)} disabled={busy}
+            style={{ ...inputStyle, cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.6 : 1 }}>
+            {recipes.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
+        )}
+      </div>
+      <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="新窗标题(不填=文件名)" disabled={busy}
+        style={{ ...inputStyle, marginBottom: 10 }} />
+      <input type="file" accept=".jsonl,.json,application/json" onChange={onFile} disabled={busy}
+        style={{ fontSize: 12, color: 'var(--ink-body)' }} />
+      {busy && <div style={{ fontSize: 12, color: 'var(--ink2)', marginTop: 8 }}>导入处理中…</div>}
+      {error && <div style={{ fontSize: 12, color: errColor, marginTop: 8 }}>{error}</div>}
+      {receipt && (
+        <div style={{ marginTop: 10, background: 'var(--scale-0)', borderRadius: 10, padding: '10px 12px' }}>
+          <div style={{ fontSize: 13, color: 'var(--accent)', fontWeight: 600, marginBottom: 4 }}>导入成功</div>
+          <div style={{ fontSize: 11.5, color: 'var(--accent)', marginBottom: 8 }}>
+            {`共导入 ${receipt.floor_count} 条楼层,新窗已建好——去写作台能看到这扇窗`}
+          </div>
+          {Array.isArray(receipt.warnings) && receipt.warnings.length > 0 && (
+            <div style={{ fontSize: 11, color: 'var(--ink2)', marginBottom: 8, lineHeight: 1.7 }}>
+              {receipt.warnings.map((w: string, i: number) => <div key={i}>⚠ {w}</div>)}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ImportTab({ base, envOk, project, onRegexChanged }: { base: string; envOk: boolean; project: string; onRegexChanged?: () => void }) {
   const [presetName, setPresetName] = useState('');
 
@@ -2190,6 +2300,7 @@ function ImportTab({ base, envOk, project, onRegexChanged }: { base: string; env
         }}
       />
       <CharacterCardImportPicker project={project} postImport={postImport} />
+      <ChatJsonlImportPicker base={base} envOk={envOk} project={project} postImport={postImport} />
     </div>
   );
 }

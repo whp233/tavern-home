@@ -20,7 +20,7 @@ import { loadDeskTimelineState, renderTimelineText, parseDeskTimelineCutoff, may
 import type { Ai, VectorizeIndex } from '../storage/vectorize';
 import { parseStateBoard as parseCoreStateBoard, STATEBOARD_MAX_BYTES as CORE_STATEBOARD_MAX_BYTES } from '../core/stateBoard.ts';
 import type { DeskAssetStorage, DeskStorage, DeskStoryStorage, DeskTurnStorage, SemanticSearchAdapter } from '../core/storage.ts';
-import { AnthropicStreamBackend } from '../adapters/streamModelBackends.ts';
+import { makeDeskBackend } from '../adapters/streamModelBackends.ts';
 import { validateDeskChannelConfig } from '../core/deskChannelConfig.ts';
 
 interface DeskChatEnv {
@@ -29,6 +29,11 @@ interface DeskChatEnv {
   AI: Ai;
   ANTHROPIC_API_KEY: string;
   ANTHROPIC_BASE_URL?: string; // 可选:Anthropic 兼容网关的完整 Messages 端点 URL;校验在 AnthropicStreamBackend 的 safeEndpoint
+  OPENAI_API_KEY?: string;     // OpenAI 兼容渠道(DeepSeek/SiliconFlow/opencode);配了优先于 Anthropic
+  OPENAI_BASE_URL?: string;    // 可选:OpenAI 兼容网关 base(如 https://api.deepseek.com/v1);校验在 OpenAIStreamBackend 的 openAiEndpoint
+  OPENAI_MODEL?: string;       // 可选:供应商模型名覆盖,如 'deepseek-chat'
+  OPENAI_MAX_TOKENS?: number;  // 可选:默认 8000(deepseek-chat 输出上限)
+  OPENAI_ALLOW_HTTP_LOCALHOST?: boolean; // 可选:opencode 本地 http://localhost 用
   [k: string]: any;
 }
 
@@ -53,7 +58,6 @@ interface DeskChatParams {
 }
 
 const DESK_DEFAULT_MODEL = 'claude-sonnet-4-5'; // 工单"model default follow editorial's"——同一个值,字面量各放一份(避免循环import)
-const USER_ID = 'tavern-study-desk'; // Keep desk usage isolated from other host features.
 const MESSAGE_MAX = 50000; // 同 editorial.ts message 上限口径
 // 近景回喂上限独立于折叠阈值，给后台延迟/失败保留安全重叠。
 const HISTORY_CAP = 40;
@@ -339,14 +343,14 @@ export async function handleDeskChat(
     return { floorId };
   }
 
-  // ===== 模型泵:直连 Anthropic,单条 user 消息(content=tail),零工具——不像
-  // editorial.ts 的 pump 那样要跑 MAX_TURNS 工具回合循环,一次请求打到底,一次流读到底。=====
+  // ===== 模型泵:makeDeskBackend 按渠道(Anthropic / OpenAI 兼容)选后端,单条 user 消息(content=tail),
+  // 零工具——不像 editorial.ts 的 pump 那样要跑 MAX_TURNS 工具回合循环,一次请求打到底,一次流读到底。=====
   const pumpBackend = async () => {
     if (mode === 'normal') await send({ type: 'user_saved', id: userFloorId });
     const controller = new AbortController();
     const abort = () => controller.abort(); signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) controller.abort();
-    const backend = new AnthropicStreamBackend({ apiKey: env.ANTHROPIC_API_KEY, baseUrl: env.ANTHROPIC_BASE_URL, userId: USER_ID });
+    const backend = makeDeskBackend(env);
     let failed = false;
     const result = await backend.streamChat({ system: systemBlocks, prompt: tail, model, signal: controller.signal, onEvent: async (event) => {
       if (clientGone) { controller.abort(); return; }

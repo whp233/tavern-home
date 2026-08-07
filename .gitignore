@@ -2,6 +2,7 @@ node_modules/
 dist/
 .wrangler/
 .dev.vars
+.local-db-initialized
 .env*
 !.env.example
 .tmp-*/

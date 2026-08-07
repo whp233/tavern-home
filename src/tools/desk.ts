@@ -21,6 +21,8 @@ import type { Ai, VectorizeIndex } from '../storage/vectorize';
 import { isPatternUnsafe } from '../shared/regexSafety';
 import { embedMemory } from './study';
 import type { CharacterCard } from '../core/characterCard';
+import { parseChatJsonl } from '../core/chatImport';
+import { deskWindowCreate } from './deskWindows';
 
 interface DeskEnv {
   OC_DB: D1Database;
@@ -795,6 +797,102 @@ export async function deskImportWorlds(env: DeskEnv, raw: any): Promise<any> {
   }
 
   return { success: true, project, count: entries.length };
+}
+
+// ===== import/chat(ST JSONL 聊天记录 → 新写作窗的楼层)=====
+// 聊天记录 JSONL 每行一个消息对象,无头部行。纯解析在 src/core/chatImport.ts(parseChatJsonl,
+// 照 parseCharacterCard 同款家法:纯函数跟落库分开),这里先 parse 再建窗落楼。
+// 建窗必须走 deskWindowCreate:它做了 recipe 存在性校验 + SEED_TIMELINE_STATE 播种(deskWindows.ts
+// 不 import 本文件,无循环依赖),新窗 timeline_state 不能指望 SQL 默认值兜底。
+
+// 0 条有效楼层时的报错辅助:从 warnings 里挑"出现次数最多的跳过原因"当代表——
+// warnings 每条形如"第N行: <原因>",剥掉行号前缀按原因分组计数,返回最大的一档。
+function biggestSkipReason(warnings: string[]): string {
+  if (warnings.length === 0) return '文件里没有任何可解析的消息行';
+  const counts = new Map<string, number>();
+  for (const w of warnings) {
+    const reason = w.replace(/^第\d+行: /, '');
+    counts.set(reason, (counts.get(reason) || 0) + 1);
+  }
+  let best = '';
+  let bestCount = -1;
+  for (const [reason, n] of counts) {
+    if (n > bestCount) { best = reason; bestCount = n; }
+  }
+  return bestCount > 1 ? `最多的跳过原因是「${best}」(共${bestCount}行)` : best;
+}
+
+export async function deskImportChat(env: DeskEnv, body: any): Promise<any> {
+  if (!body || typeof body !== 'object') {
+    return { success: false, error: `请求体不对——读到的类型是 ${describeType(body)}` };
+  }
+  const project = typeof body.project === 'string' ? body.project.trim() : '';
+  if (!project) {
+    return {
+      success: false,
+      error: body.project === undefined
+        ? '缺 project 字段(前端应该把当前打字桌project拼进请求体)'
+        : `project 字段类型不对,应该是非空字符串,实际收到的是 ${describeType(body.project)}`,
+    };
+  }
+  const recipeId = typeof body.recipe_id === 'string' ? body.recipe_id.trim() : '';
+  if (!recipeId) {
+    return {
+      success: false,
+      error: body.recipe_id === undefined
+        ? '缺 recipe_id 字段(聊天记录要落进新窗,得先指定用哪个配方)'
+        : `recipe_id 字段类型不对,应该是非空字符串,实际收到的是 ${describeType(body.recipe_id)}`,
+    };
+  }
+  const raw = body.raw;
+  if (typeof raw !== 'string') {
+    return { success: false, error: `raw 字段类型不对,应该是字符串(JSONL全文),实际收到的是 ${describeType(raw)}` };
+  }
+  const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim() : undefined;
+
+  const parsed = parseChatJsonl(raw);
+  if (!parsed.ok) return { success: false, error: parsed.error };
+  if (parsed.floors.length === 0) {
+    return { success: false, error: `聊天记录里 0 条有效楼层(共跳过 ${parsed.skipped_lines} 行)——${biggestSkipReason(parsed.warnings)}` };
+  }
+
+  const created = await deskWindowCreate(env, { project, recipe_id: recipeId, title: title || '' });
+  if (!created.success) return created; // 建窗失败(配方不存在等)原样透传
+  const windowId = created.id;
+
+  // 楼层 id 同 deskImportWorlds 口径:baseTs + 数组下标,同批内严格按文件序,不靠随机后缀定先后。
+  const baseTs = Date.now();
+  const rand = Math.random().toString(36).slice(2, 11);
+  // D1 batch() 硬顶 1000 条/次(付费档预算),900 留安全线——楼层按批循环导,不用一锤子。
+  // 批间失败不回滚已导批次(同 importCharacterCard 内嵌世界书那条家法:宁可"窗建了、部分楼层
+  // 进了"让部署者自己看着办,不做跨批次的"全有或全无"),如实报错。
+  const BATCH_LIMIT = 900;
+  let inserted = 0;
+  for (let start = 0; start < parsed.floors.length; start += BATCH_LIMIT) {
+    const chunk = parsed.floors.slice(start, start + BATCH_LIMIT);
+    const stmts = chunk.map((f, k) => {
+      const absIdx = start + k;
+      return env.OC_DB.prepare(
+        `INSERT INTO desk_floors (id, window_id, role, content, variants, active_variant, thinking, report, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, NULL, '{}', ?)`
+      ).bind(`fl_${baseTs + absIdx}_${rand}`, windowId, f.role, f.content, JSON.stringify(f.variants), f.activeVariant, f.createdAt);
+    });
+    try {
+      await env.OC_DB.batch(stmts);
+      inserted += chunk.length;
+    } catch (err: any) {
+      return { success: false, error: err.message, server: true };
+    }
+  }
+
+  return {
+    success: true,
+    window_id: windowId,
+    project,
+    floor_count: inserted,
+    warnings: parsed.warnings,
+    skipped_lines: parsed.skipped_lines,
+  };
 }
 
 // ===== import/card(角色卡 V1/V2/V3 → 书架角色卡条目 + 内嵌世界书)=====

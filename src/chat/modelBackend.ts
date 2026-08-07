@@ -10,7 +10,7 @@
 //     text 块。thinking 沿用模型档案缺省(Fable/Opus 关不掉,别硬传 disabled 吃 400)。
 
 import { buildModelParams } from './models.ts';
-import { safeEndpoint } from '../adapters/streamModelBackends.ts';
+import { safeEndpoint, openAiEndpoint } from '../adapters/streamModelBackends.ts';
 
 export interface ModelBackendEnv {
   ANTHROPIC_API_KEY?: string;
@@ -42,6 +42,9 @@ const DEFAULT_TIMEOUT_MS = 100_000;
 const DEFAULT_API_MAX_TOKENS = 8000;
 
 export async function completeText(env: ModelBackendEnv, { system, prompt, model, timeoutMs, maxTokens }: CompleteTextArgs): Promise<CompleteTextResult> {
+  // OpenAI 兼容渠道分发:Anthropic 缺 key 但 OPENAI key 配了就切 OpenAI Chat Completions 非流式。
+  // 分发优先于 no_key——两条链(deskTimeline/deskBoardRefresh)的守门已放宽到两个 key 任一存在。
+  if (!env.ANTHROPIC_API_KEY && env.OPENAI_API_KEY) return completeTextOpenAI(env, { system, prompt, model, timeoutMs, maxTokens });
   if (!env.ANTHROPIC_API_KEY) return { ok: false, kind: 'no_key' };
   // 只认 undefined=未配置;配了(含空串)就必须过 safeEndpoint——空值不是端点,不许悄悄回落官方(codex增量审)。
   const endpoint = env.ANTHROPIC_BASE_URL === undefined ? ANTHROPIC_URL : safeEndpoint(env.ANTHROPIC_BASE_URL);
@@ -101,6 +104,65 @@ export async function completeText(env: ModelBackendEnv, { system, prompt, model
     }
     if (!text) return { ok: false, kind: 'empty', detail: 'end_turn', usage };
     return { ok: true, text, usage, stopReason: String(data.stop_reason) };
+  } catch (e: any) {
+    if (e?.name === 'AbortError') return { ok: false, kind: 'timeout' };
+    return { ok: false, kind: 'fetch', detail: String(e?.message || e) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// OpenAI 兼容(Chat Completions)非流式直连:专供 deskTimeline/deskBoardRefresh 两条链。
+// 与流式 OpenAI 后端同纪律:只认 choices[0].finish_reason === 'stop' 为干净终态;
+// 'length'→truncated、'content_filter'→refusal、缺失/未知→bad_stop_reason、空文本→empty。
+// 不设 stream、独立轻量 body、不带 thinking/output_config(cache 标志在 OpenAI 协议无对应物,丢弃)。
+async function completeTextOpenAI(env: ModelBackendEnv, { system, prompt, model, timeoutMs, maxTokens }: CompleteTextArgs): Promise<CompleteTextResult> {
+  if (!env.OPENAI_API_KEY) return { ok: false, kind: 'no_key' };
+  // baseUrl===undefined → openAiEndpoint 内部给默认 DeepSeek 端点;配了必须过校验,非法=bad_base_url,不悄悄回落。
+  const endpoint = openAiEndpoint(env.OPENAI_BASE_URL, env.OPENAI_ALLOW_HTTP_LOCALHOST);
+  if (!endpoint) return { ok: false, kind: 'bad_base_url', detail: String(env.OPENAI_BASE_URL).slice(0, 120) };
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  try {
+    const body: Record<string, any> = {
+      model: env.OPENAI_MODEL || model,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: prompt },
+      ],
+      max_tokens: maxTokens ?? DEFAULT_API_MAX_TOKENS,
+    };
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${String(env.OPENAI_API_KEY)}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctl.signal,
+    });
+    if (!resp.ok) {
+      const d = await resp.text().catch(() => '');
+      return { ok: false, kind: 'http', detail: `${resp.status}: ${d.slice(0, 200)}` };
+    }
+    const data: any = await resp.json().catch(() => null);
+    if (!data) return { ok: false, kind: 'empty', detail: 'bad json' };
+    const choice = Array.isArray(data.choices) ? data.choices[0] : undefined;
+    // message.content 兼容 string(OpenAI 官方/DeepSeek 直接给)或数组(text 块)。
+    const content = choice?.message?.content;
+    let text = '';
+    if (typeof content === 'string') text = content;
+    else if (Array.isArray(content)) text = content.filter((b: any) => b?.type === 'text').map((b: any) => String(b.text || '')).join('');
+    const u = data.usage || {};
+    const usage = {
+      input: Number(u.prompt_tokens) || 0,
+      output: Number(u.completion_tokens) || 0,
+      cache_read: Number(u.prompt_cache_hit_tokens) || 0,
+      cache_write: Number(u.prompt_cache_miss_tokens) || 0,
+    };
+    const stop = choice?.finish_reason;
+    if (stop === 'length') return { ok: false, kind: 'truncated', detail: 'length', usage };
+    if (stop === 'content_filter') return { ok: false, kind: 'refusal', detail: 'content_filter', usage };
+    if (stop !== 'stop') return { ok: false, kind: 'bad_stop_reason', detail: stop ? String(stop) : 'missing', usage };
+    if (!text) return { ok: false, kind: 'empty', detail: 'stop', usage };
+    return { ok: true, text, usage, stopReason: String(stop) };
   } catch (e: any) {
     if (e?.name === 'AbortError') return { ok: false, kind: 'timeout' };
     return { ok: false, kind: 'fetch', detail: String(e?.message || e) };

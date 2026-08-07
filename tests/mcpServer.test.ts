@@ -26,7 +26,7 @@ test('runs the shelf and bookclub tool flows against the underlying study and re
   const host = fixture();
   const server = new TavernStudyMcpServer(host, owner);
   const initialized = await initialize(server);
-  assert.equal(initialized.result.serverInfo.name, 'tavern-study');
+  assert.equal(initialized.result.serverInfo.name, 'tavern-home');
   const listed = await server.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
   assert.deepEqual(listed.result.tools.map((tool: any) => tool.name), ['shelf', 'bookclub']);
 

@@ -68,7 +68,7 @@ export class TavernStudyMcpServer {
       if (this.initialized) return this.error(request.id, -32600, 'Already initialized');
       if (request.id === undefined || !p || typeof p !== 'object' || typeof p.protocolVersion !== 'string' || !p.clientInfo || typeof p.clientInfo.name !== 'string' || typeof p.clientInfo.version !== 'string' || !p.capabilities || typeof p.capabilities !== 'object') return this.error(request.id, -32602, 'Invalid params');
       this.initialized = true;
-      return this.ok(request.id, { protocolVersion: '2025-06-18', capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'tavern-study', version: '0.1.0' } });
+      return this.ok(request.id, { protocolVersion: '2025-06-18', capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'tavern-home', version: '0.1.0' } });
     }
     if (request.id === undefined) return null;
     if (!this.initialized) return this.error(request.id, -32002, 'Server not initialized');

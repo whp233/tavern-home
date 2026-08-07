@@ -9,7 +9,7 @@ import { VectorizeSemanticSearch } from './adapters/vectorizeSemanticSearch.ts';
 import type { Ai, VectorizeIndex } from '../../src/storage/vectorize';
 import type { SemanticSearchAdapter } from '../../src/core/storage.ts';
 import {
-  deskImportPreset, deskImportSettings, deskImportWorlds, deskImportRegexBundle, importCharacterCard,
+  deskImportPreset, deskImportSettings, deskImportWorlds, deskImportRegexBundle, importCharacterCard, deskImportChat,
   deskListPresets, deskPresetDelete, deskListRegex, deskBackfillChapterVectors,
 } from '../../src/tools/desk';
 import { parseCharacterCard } from '../../src/core/characterCard.ts';
@@ -43,6 +43,15 @@ interface Env extends AuthEnv {
   // (e.g. "https://gateway.example.com/v1/messages"). Protocol stays Anthropic Messages;
   // https-only, credentials-in-URL rejected. Unset = api.anthropic.com.
   ANTHROPIC_BASE_URL?: string;
+  // OpenAI-compatible channel (DeepSeek / SiliconFlow / opencode, etc.). When OPENAI_API_KEY is
+  // set (and ANTHROPIC_API_KEY is not), the desk chat / board-refresh / timeline-fold chains use
+  // the OpenAI Chat Completions protocol instead. OPENAI_BASE_URL defaults to the DeepSeek
+  // endpoint; OPENAI_MODEL overrides the wire model name (e.g. 'deepseek-chat').
+  OPENAI_API_KEY?: string;
+  OPENAI_BASE_URL?: string;
+  OPENAI_MODEL?: string;
+  OPENAI_MAX_TOKENS?: number;
+  OPENAI_ALLOW_HTTP_LOCALHOST?: string;
   ALLOWED_ORIGINS?: string;
   // Path-token gate for the writer's-desk admin surface (/{AUTH_TOKEN}/api/oc/...) — a secret
   // distinct from the Bearer owner/companion tokens above, matching production's own separate
@@ -395,6 +404,13 @@ async function handleDeskAdmin(request: Request, env: Env, url: URL, ctx: Execut
     if (r.success) r.warnings = [...parsed.warnings, ...(Array.isArray(r.warnings) ? r.warnings : [])];
     return json(request, env, r, r.success ? 200 : (r.server === true ? 500 : 400));
   }
+  // 聊天记录 JSONL 导入——长聊天文件可能超 DESK_BODY_MAX(10MB),单独放宽到 32MB。
+  if (url.pathname === '/api/oc/desk/import/chat' && request.method === 'POST') {
+    const read = await deskReadJsonLimited(request, { maxBytes: 32 * 1024 * 1024 });
+    if ('resp' in read) return read.resp;
+    const r = await deskImportChat(env as any, read.body);
+    return json(request, env, r, r.success ? 200 : (r.server === true ? 500 : 400));
+  }
 
   // ----- preset packs and their blocks -----
   if (url.pathname === '/api/oc/desk/presets' && request.method === 'GET') {
@@ -687,7 +703,7 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
     const headers = corsHeaders(request, env);
     return Object.keys(headers).length ? new Response(null, { status: 204, headers }) : new Response(null, { status: 403 });
   }
-  if (url.pathname === '/health' && request.method === 'GET') return json(request, env, { ok: true, service: 'tavern-study' });
+  if (url.pathname === '/health' && request.method === 'GET') return json(request, env, { ok: true, service: 'tavern-home' });
 
   // Writer's-desk admin surface: URL-path token gate, shape /{AUTH_TOKEN}/api/oc/..., mirroring
   // the reference deployment's single `pathParts[0] === AUTH_TOKEN` judgement for this

@@ -343,10 +343,10 @@ export async function maybeFoldDeskTimeline(
       `【本轮楼层原文｜唯一摘要来源】\n<楼层原文>\n${lines}\n</楼层原文>`;
 
     // 渠道守门(文案主权在本文件,合同层只回结构化终态):缺 key 在动手前拦下。
-    if (!env.ANTHROPIC_API_KEY) {
-      console.error('[desk-timeline] ANTHROPIC_API_KEY 没配,摘要走不通');
+    if (!env.ANTHROPIC_API_KEY && !env.OPENAI_API_KEY) {
+      console.error('[desk-timeline] 模型渠道没配(ANTHROPIC_API_KEY 或 OPENAI_API_KEY),摘要走不通');
       await usageSink.logUsage('desk-timeline', model, undefined, 'failed');
-      return { success: false, acted: false, error: 'ANTHROPIC_API_KEY 没配' };
+      return { success: false, acted: false, error: '模型渠道没配(ANTHROPIC_API_KEY 或 OPENAI_API_KEY)' };
     }
 
     // completeText 只返回结构化终态；时光带文案在本层翻译。API 截断/拒答也必须记真实 usage。
@@ -356,7 +356,7 @@ export async function maybeFoldDeskTimeline(
       apiUsage = r.usage;
       if (!r.ok) {
         const reason =
-          r.kind === 'no_key' ? 'ANTHROPIC_API_KEY 没配' :
+          r.kind === 'no_key' ? '模型渠道没配(ANTHROPIC_API_KEY 或 OPENAI_API_KEY)' :
           r.kind === 'http' ? `summary ${r.detail}` :
           r.kind === 'empty' ? `summary ${r.detail || 'empty'}` :
           r.kind === 'truncated' ? 'summary 被 max_tokens 截断,这批不落库、下轮重试' :

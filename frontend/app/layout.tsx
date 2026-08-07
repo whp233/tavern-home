@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "书房 · tavern-study",
+  title: "书房 · tavern-home",
   description: "一个可嵌入的故事创作书房：私人设定笔记、公开连载与留言、打字桌。",
 };
 

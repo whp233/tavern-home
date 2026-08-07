@@ -116,10 +116,10 @@ export async function deskBoardRefresh(env: DeskBoardRefreshEnv, windowId: strin
     `【最新正文】\n<最新正文>\n${safeContent}\n</最新正文>`;
 
   // 渠道守门(文案主权在本文件,合同层只回结构化终态):缺 key 在动手前拦下。
-  if (!env.ANTHROPIC_API_KEY) {
-    console.error('[desk-board-refresh] ANTHROPIC_API_KEY 没配,刷新走不通');
+  if (!env.ANTHROPIC_API_KEY && !env.OPENAI_API_KEY) {
+    console.error('[desk-board-refresh] 模型渠道没配(ANTHROPIC_API_KEY 或 OPENAI_API_KEY),刷新走不通');
     await usageSink.logUsage('desk-board-refresh', REFRESH_MODEL, undefined, 'failed');
-    return { success: false, error: 'ANTHROPIC_API_KEY 没配' };
+    return { success: false, error: '模型渠道没配(ANTHROPIC_API_KEY 或 OPENAI_API_KEY)' };
   }
 
   // 请求统一走 completeText 的超时与终态合同。
@@ -131,7 +131,7 @@ export async function deskBoardRefresh(env: DeskBoardRefreshEnv, windowId: strin
     apiUsage = r.usage;
     if (!r.ok) {
       const reason =
-        r.kind === 'no_key' ? 'ANTHROPIC_API_KEY 没配' :
+        r.kind === 'no_key' ? '模型渠道没配(ANTHROPIC_API_KEY 或 OPENAI_API_KEY)' :
         r.kind === 'http' ? `模型没答应(${r.detail})` :
         r.kind === 'empty' ? `模型没给出内容(${r.detail || 'empty'})` :
         r.kind === 'truncated' ? '刷新结果被截断(max_tokens),再试一次' :

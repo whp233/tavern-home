@@ -1,22 +1,29 @@
-name = "tavern-study"
+name = "tavern-home"
 main = "examples/cloudflare/index.ts"
 compatibility_date = "2026-07-01"
 
 [[d1_databases]]
 binding = "OC_DB"
-database_name = "tavern-study"
+database_name = "tavern-home"
 database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
 migrations_dir = "examples/cloudflare/schema/migrations"
 
 # Optional: semantic search for study/shelf entries and chapter recall. Everything degrades
 # gracefully without it (StudyService reports capability:'disabled'; desk assembly's "past
 # chapters" section simply stays empty) — bind these only if you want semantic search on.
-[[vectorize]]
-binding = "OC_VECTORIZE"
-index_name = "REPLACE_WITH_YOUR_VECTORIZE_INDEX"
-
-[ai]
-binding = "AI"
+#
+# NOTE (local dev): both blocks below are commented out ON PURPOSE. The [ai] binding makes
+# `wrangler dev` open a remote Workerd/Workers AI session against Cloudflare even in local
+# mode; without CLOUDFLARE_API_TOKEN in the environment that fails hard and the dev server
+# won't boot. The [[vectorize]] binding is inert here too (placeholder index name), so both
+# are disabled for local development. Re-enable them only when you actually need semantic
+# search AND have Cloudflare credentials configured.
+# [[vectorize]]
+# binding = "OC_VECTORIZE"
+# index_name = "REPLACE_WITH_YOUR_VECTORIZE_INDEX"
+#
+# [ai]
+# binding = "AI"
 
 [vars]
 ALLOWED_ORIGINS = "http://localhost:8787"
