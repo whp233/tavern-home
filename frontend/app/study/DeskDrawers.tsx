@@ -122,6 +122,85 @@ function useDoubleConfirm(action: (id: string) => void) {
   return { stage, click };
 }
 
+// 预设空状态三步引导(开箱即用):全新用户不知道"预设是什么"也能起步——①这是什么 ②怎么开始
+// (一键导入内置默认预设,或导入自己的)③去哪拿更多。挂在 BlocksTab 两处空状态(建配方选预设 /
+// 预设包管理),导入成功后调 onImported 让父组件重拉列表。
+// 内置默认预设文件在 frontend/public/presets/default-writing.json(前端同源静态资源),导入走现有
+// 预设导入口 /api/oc/desk/import/preset(与「导入」标签①号口同一服务端逻辑,不新增后端路由)。
+function PresetEmptyGuide({ base, envOk, onImported }: { base: string; envOk: boolean; onImported: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  // 与 ImportTab.postImport 同款:body 是预设 JSON,URL 带显示名。默认预设固定叫「默认·小说直写」,
+  // 跟 init.sql 播种那份同名——删了再一键恢复也长一个样。
+  async function importPresetJson(name: string, json: any) {
+    if (!envOk) throw new Error('环境变量没配好');
+    const res = await fetch(`${base}/api/oc/desk/import/preset?${new URLSearchParams({ name })}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(json),
+    });
+    const d = await res.json().catch(() => null);
+    if (!res.ok || !d || d.success !== true) throw new Error(d?.error || '导入失败(服务端没确认成功)');
+    return d;
+  }
+
+  async function importDefault() {
+    setBusy(true); setError('');
+    try {
+      const res = await fetch('/presets/default-writing.json');
+      if (!res.ok) throw new Error(`内置默认预设拉取失败(HTTP ${res.status})——前端静态资源没跟上`);
+      const json: any = await res.json().catch(() => null);
+      if (!json || typeof json !== 'object') throw new Error('内置默认预设不是合法的 JSON');
+      await importPresetJson('默认·小说直写', json);
+      onImported();
+    } catch (e: any) {
+      setError(e.message || '导入失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onOwnFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = ''; // 同名文件也能再选一次
+    setBusy(true); setError('');
+    try {
+      const text = await file.text();
+      let json: any;
+      try { json = JSON.parse(text); } catch { throw new Error('不是合法的 JSON 文件'); }
+      await importPresetJson(file.name.replace(/\.json$/i, ''), json);
+      onImported();
+    } catch (e: any) {
+      setError(e.message || '导入失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ ...cardStyle, padding: '14px 16px', background: 'var(--scale-0)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ fontSize: 12, color: 'var(--ink-deep)', lineHeight: 1.7 }}>
+        <b>预设是什么？</b> 预设 = 教 AI 该怎么写的提示词配置包——给 AI 定口吻、写作规则、采样参数。还没导过预设包，从这里起步——
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--ink-body)', lineHeight: 1.7 }}>
+        <b>怎么开始？</b> 点「一键导入内置默认」马上拿到「默认·小说直写」预设（只写小说正文、不解释），接着就能建配方、开写作窗；想用自己的预设，选文件导入也行。
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button onClick={importDefault} disabled={busy} style={{ ...btnPrimaryStyle, opacity: busy ? 0.5 : 1 }}>
+          {busy ? '导入中…' : '一键导入内置默认'}
+        </button>
+        <button onClick={() => fileRef.current?.click()} disabled={busy} style={{ ...btnGhostStyle, opacity: busy ? 0.5 : 1 }}>导入自己的预设包</button>
+        <input ref={fileRef} type="file" accept="application/json,.json" onChange={onOwnFile} disabled={busy} style={{ display: 'none' }} />
+      </div>
+      {error && <div style={{ fontSize: 11.5, color: errColor }}>{error}</div>}
+      <div style={{ fontSize: 11.5, color: 'var(--ink2)', lineHeight: 1.7 }}>
+        <b>去哪拿更多？</b> SillyTavern 官方 GitHub（github.com/SillyTavern/SillyTavern，仓库自带默认预设）；社区分享与讨论在官方 Discord（discord.gg/sillytavern）。
+      </div>
+    </div>
+  );
+}
+
 // ══════════════════════════════════════════ ① 积木/配方 ══════════════════════════════════════════
 // N选1真单选钮(同组物理互斥)判断留观:S1导入解析器没抽 ST 的"分组互斥"字段(工单§4 S2范围早钉过
 // 这条——desk_blocks 落库时就没存这个位),这里没有组信息可供 UI 做真单选。S5a 按工单原文"SKIP for
@@ -775,7 +854,7 @@ function BlocksTab({ base, envOk, project, onDirtyChange, onRegexChanged, onOver
                 <button onClick={loadPresets} style={{ ...btnGhostStyle, alignSelf: 'flex-start' }}>重试</button>
               </div>
             ) : presets.length === 0 ? (
-              <div style={{ fontSize: 12, color: 'var(--ink2)' }}>还没导过预设包——去「导入」标签先导一份</div>
+              <PresetEmptyGuide base={base} envOk={envOk} onImported={loadPresets} />
             ) : (
               <select value={newPresetId} onChange={(e) => setNewPresetId(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
                 {presets.map((p) => <option key={p.id} value={p.id}>{p.name}（{p.block_count}块）</option>)}
@@ -993,7 +1072,7 @@ function BlocksTab({ base, envOk, project, onDirtyChange, onRegexChanged, onOver
             ) : presetsError ? (
               <div style={{ fontSize: 12.5, color: errColor }}>翻不开：{presetsError}</div>
             ) : presets.length === 0 ? (
-              <div style={{ fontSize: 12.5, color: 'var(--ink2)' }}>还没导过预设包——去「导入」标签先导一份</div>
+              <PresetEmptyGuide base={base} envOk={envOk} onImported={loadPresets} />
             ) : presets.map((p) => {
               const expanded = !!presetExpanded[p.id];
               const cache = presetBlocksCache[p.id];

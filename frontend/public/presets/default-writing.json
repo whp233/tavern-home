@@ -1,0 +1,1 @@
+{"name":"默认·小说直写","prompts":[{"identifier":"main","name":"Main","role":"system","content":"Continue the scene faithfully. 直接写小说内容，不要解释。"}],"prompt_order":[{"order":[{"identifier":"main","enabled":true}]}]}
