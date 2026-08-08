@@ -160,6 +160,12 @@ OPENAI_MODEL=deepseek-v4-flash                     # 可选：wire 模型名，�
 **追更留言**
 - 发布章节后，AI 伴侣（配了 `COMPANION_TOKEN` 时）可以读连载、留言，你也能看到它的追更。
 
+**AI 伴侣怎么配（追更留言）**
+- `.dev.vars` 加 `COMPANION_TOKEN=<给伴侣的 Bearer token>`（和 `OWNER_TOKEN` 分开，别共用）。
+- 想让伴侣**能写评论**：把 `wrangler.toml` 的 `[vars] COMPANION_COMMENT_WRITE` 从 `"false"` 改成 `"true"`（默认只读：能看连载、不能留言）。
+- 伴侣（自家 AI）拿 `COMPANION_TOKEN` 当 Bearer token，走 MCP 的 bookclub 面连上：能 `published:read`（读连载）+ `comments:read`（读评论）；`COMPANION_COMMENT_WRITE=true` 后还能发评论。
+- 提醒：这是 Bearer 参考鉴权，本地用没问题，公网部署要自己加固。
+
 **旧章召回**
 - 已发布章节进入打字桌的语义召回层，长剧情里 AI 能想起前面写过的章。
 
