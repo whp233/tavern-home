@@ -556,43 +556,65 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
     } catch (e: any) { setWinDelError(e.message || '删除失败'); }
   }
 
-  // ── 自动成书(收为章节):POST /windows/:id/book 逐批转写,remaining>0 继续生成 ──
+  // ── 自动成书(收为章节):POST /windows/:id/book 单章循环转写(max_chapters=1),remaining>0 继续,可中途停止 ──
+  const stopRef = useRef(false);
   const [bookWin, setBookWin] = useState<string | null>(null);
   const [bookStyle, setBookStyle] = useState<'novel' | 'dialogue'>('novel');
   const [bookBusy, setBookBusy] = useState(false);
-  const [bookProgress, setBookProgress] = useState<Record<string, { done: number; remaining: number; already?: number; total?: number; error?: string }>>({});
+  const [bookProgress, setBookProgress] = useState<Record<string, { done: number; remaining: number; already?: number; total?: number; error?: string; generating?: boolean }>>({});
 
   function openBookModal(id: string) {
+    stopRef.current = false;
     setBookStyle('novel');
-    setBookProgress((p) => ({ ...p, [id]: { done: 0, remaining: 0, error: '' } }));
+    setBookProgress((p) => ({ ...p, [id]: { done: 0, remaining: 0, error: '', generating: false } }));
     setBookWin(id);
   }
 
+  function stopBook(_id: string) {
+    stopRef.current = true;
+  }
+
   async function runBook(id: string) {
+    stopRef.current = false;
     setBookBusy(true);
-    setBookProgress((p) => ({ ...p, [id]: { ...(p[id] || { done: 0, remaining: 0 }), error: '' } }));
+    setBookProgress((p) => ({ ...p, [id]: { ...(p[id] || { done: 0, remaining: 0, error: '' }), error: '', generating: true } }));
     try {
-      const res = await fetch(`${base}/api/oc/desk/windows/${id}/book`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ style: bookStyle }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const d = await res.json().catch(() => null);
-      if (!d || d.success !== true) throw new Error(d?.error || '成书失败(服务端没确认)');
-      setBookProgress((p) => ({
-        ...p,
-        [id]: {
-          done: d.done ?? 0,
-          remaining: d.remaining ?? 0,
-          already: d.already ?? 0,
-          total: d.total_chapters,
-          error: Array.isArray(d.failed) && d.failed.length ? `这轮有 ${d.failed.length} 章失败,点继续生成重试` : '',
-        },
-      }));
+      let remaining = 1;
+      while (remaining > 0 && !stopRef.current) {
+        setBookProgress((p) => ({ ...p, [id]: { ...(p[id] || { done: 0, remaining: 0, error: '' }), generating: true } }));
+        const res = await fetch(`${base}/api/oc/desk/windows/${id}/book`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ style: bookStyle, max_chapters: 1 }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const d = await res.json().catch(() => null);
+        if (!d || d.success !== true) throw new Error(d?.error || '成书失败(服务端没确认)');
+        const hasFailed = Array.isArray(d.failed) && d.failed.length;
+        setBookProgress((p) => {
+          const base = p[id] || { done: 0, remaining: 0 };
+          const done = base.done + (d.done ?? 0);
+          return {
+            ...p,
+            [id]: {
+              ...base,
+              done,
+              remaining: d.remaining ?? 0,
+              already: d.already ?? 0,
+              total: d.total_chapters,
+              generating: false,
+              error: hasFailed ? `第 ${done + 1} 章转写失败,已停止` : '',
+            },
+          };
+        });
+        remaining = d.remaining ?? 0;
+        if (hasFailed) break;
+        if (remaining > 0 && !stopRef.current) await new Promise((r) => setTimeout(r, 300));
+      }
     } catch (e: any) {
-      setBookProgress((p) => ({ ...p, [id]: { ...(p[id] || { done: 0, remaining: 0 }), error: e.message || '成书失败' } }));
+      setBookProgress((p) => ({ ...p, [id]: { ...(p[id] || { done: 0, remaining: 0 }), error: e.message || '成书失败', generating: false } }));
     } finally {
+      setBookProgress((p) => ({ ...p, [id]: { ...(p[id] || { done: 0, remaining: 0 }), generating: false } }));
       setBookBusy(false);
     }
   }
@@ -859,6 +881,27 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
   const [model, setModel] = useState('claude-sonnet-4-5');
   useEffect(() => { try { const m = localStorage.getItem('oc_desk_model'); if (m && DESK_MODELS.some((x) => x.id === m)) setModel(m); } catch { /* 无localStorage环境无所谓 */ } }, []);
   function pickModel(id: string) { setModel(id); try { localStorage.setItem('oc_desk_model', id); } catch { /* 同上 */ } }
+
+  // ── 多供应商(「商」按钮+弹层)── 供应商选择存 localStorage 全桌通用,空串 = 老渠道自动选择
+  // (OPENAI_* 优先,否则 Anthropic,向后兼容不改默认行为)。供应商列表从后端 GET /desk/providers 拉
+  // (扫 env 已配的供应商组)。协议字段用于联动:OpenAI 兼容供应商的模型是 wire 模型名(deepseek-chat
+  // 之类),anthropic/老渠道才用 claude 白名单 DESK_MODELS。
+  type DeskProvider = { id: string; name: string; protocol: 'openai' | 'anthropic'; models: string[] };
+  const [provider, setProvider] = useState('');
+  const [providers, setProviders] = useState<DeskProvider[]>([]);
+  const [providerMenuOpen, setProviderMenuOpen] = useState(false);
+  const [providersError, setProvidersError] = useState('');
+  useEffect(() => { try { const p = localStorage.getItem('oc_desk_provider'); if (p) setProvider(p); } catch { /* 无localStorage环境无所谓 */ } }, []);
+  function pickProvider(id: string) {
+    setProvider(id);
+    try { localStorage.setItem('oc_desk_provider', id); } catch { /* 同上 */ }
+    // 模型联动:当前 model 不在新供应商的模型列表里就切到第一个——anthropic 的列表=claude 白名单,
+    // 老 oc_desk_model 基本都在里面,天然不误伤;OpenAI 兼容渠道 env 的 <PREFIX>_MODEL 本来就是
+    // wire 模型名的最高优先,这里再同步一下展示层下拉,免得选中值不在列表里。
+    const p = providers.find((x) => x.id === id);
+    if (p && p.models.length && !p.models.includes(model)) pickModel(p.models[0]);
+    setProviderMenuOpen(false);
+  }
   // 窗口换配方(实测撞出的洞:删配方没查窗口引用,窗口还钉着旧recipe_id,重roll直接500
   // "配方不存在"——原来只能手动接回新配方救急,这里补正经的UI出口)。选实现简单的:头栏一个原生
   // <select>(照模型选择器同款视觉家法),不做弹出菜单那套(点击态/外部点击关闭都要自己管,
@@ -891,6 +934,35 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
     })();
     return () => { cancelled = true; };
   }, [mode, curWindowId, base, envOk]);
+  // 供应商列表:进写作屏拉一次(后端扫 env 已配的供应商组)。全局配置(不随窗变),失败静默降级——
+  // 拿不到列表时「商」弹层空着/报一行淡提示,不影响用当前渠道继续写。localStorage 里的供应商若已
+  // 不在已配列表里(比如 .dev.vars 换过配置),清掉回老渠道,免得后端 500「模型供应商未配置或不存在」。
+  useEffect(() => {
+    if (mode !== 'write') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        if (!envOk) return;
+        const res = await fetch(`${base}/api/oc/desk/providers`);
+        if (!res.ok) { if (!cancelled) setProvidersError('供应商列表拉取失败'); return; }
+        const d = await res.json().catch(() => null);
+        if (cancelled) return;
+        if (d && d.success === true && Array.isArray(d.providers)) {
+          const list = d.providers as DeskProvider[];
+          setProviders(list);
+          setProvidersError('');
+          setProvider((cur) => {
+            if (cur && !list.some((p) => p.id === cur)) {
+              try { localStorage.removeItem('oc_desk_provider'); } catch {}
+              return '';
+            }
+            return cur;
+          });
+        }
+      } catch { /* 同上,静默降级 */ }
+    })();
+    return () => { cancelled = true; };
+  }, [mode, base, envOk]);
   async function switchRecipe(newRecipeId: string) {
     if (!curWindowId || !win || !newRecipeId || newRecipeId === win.recipe_id) return;
     // 生成在飞不许切配方(工单点名):assembleDesk 装配这一楼时读的是窗口此刻的recipe_id,
@@ -1520,7 +1592,7 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
     abortRef.current = ac;
     const turn = (async () => {
       let userSaved = false;
-      const outcome = await streamChat({ window_id: windowId, message: msg, channel: 'vps', model }, {
+      const outcome = await streamChat({ window_id: windowId, message: msg, channel: 'vps', model, ...(provider ? { provider } : {}) }, {
         onUserSaved: (id) => {
           userSaved = true;
           patchFloor(myGen, userKey, (f) => ({ ...f, id }));
@@ -1620,7 +1692,7 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
     const ac = new AbortController();
     abortRef.current = ac;
     const turn = (async () => {
-      const outcome = await streamChat({ window_id: windowId, roll: true, channel: 'vps', model }, {
+      const outcome = await streamChat({ window_id: windowId, roll: true, channel: 'vps', model, ...(provider ? { provider } : {}) }, {
         onText: (t) => patchFloor(myGen, f.key, (fl) => ({ ...fl, content: fl.content + t })),
         onThinking: (t) => patchFloor(myGen, f.key, (fl) => ({ ...fl, thinking: (fl.thinking || '') + t })),
       }, ac.signal);
@@ -2955,6 +3027,12 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
       for (let i = floors.length - 1; i >= 0; i--) if (floors[i].role === 'assistant') return floors[i].key;
       return null;
     })();
+    // 供应商联动:当前供应商决定模型下拉列哪些模型——OpenAI 兼容渠道列它自己的 wire 模型名
+    // (后端 env 的 <PREFIX>_MODEL 是最权威的 wire 模型),anthropic/老渠道沿用 claude 白名单。
+    const activeProvider = provider ? (providers.find((p) => p.id === provider) || null) : null;
+    const modelOptions = activeProvider && activeProvider.protocol === 'openai'
+      ? activeProvider.models.map((m) => ({ id: m, label: m }))
+      : DESK_MODELS;
 
     // 布局改造:写作屏从"整页早退接管(min-h-screen,body 自己滚)"改成"stage 里的
     // 全高子应用"——h-full 撑满 stage、overflow-hidden 兜住自己;头尾栏改 flex-none(不再需要
@@ -3001,6 +3079,48 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
               >
                 世
               </button>
+              {/* 「商」= 多供应商(模型走哪个渠道)。跟模型下拉是同一件事的两个面,故与「文」并排、
+                  放竖线左侧(项目级一侧)。弹层结构照 ⋯ 菜单同款(透明背板兜点击关闭):列出后端
+                  env 里已配的供应商,每行显示供应商名 + 模型名;点一行 = 切供应商 + 存 localStorage +
+                  联动模型下拉。 */}
+              <div className="relative shrink-0">
+                <button
+                  onClick={() => setProviderMenuOpen((v) => !v)}
+                  title="供应商：切换模型供应商（Anthropic / DeepSeek / 硅基流动 / opencode…）"
+                  className="serc inline-flex items-center justify-center shrink-0 cursor-pointer hover:brightness-[.97] transition w-[38px] h-[38px] rounded-xl bg-card border border-line-soft text-sm text-ink-body"
+                >
+                  商
+                </button>
+                {providerMenuOpen && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setProviderMenuOpen(false)} />
+                    <div className="absolute right-0 mt-2 w-64 bg-card border border-line-soft rounded-2xl shadow-lg p-1.5 z-20 text-sm">
+                      <div className="px-3 pt-1 pb-1.5 text-[11px] text-ink2 leading-snug">供应商（选中的模型走哪个渠道；选择写进 localStorage 全桌通用）</div>
+                      {providersError && <div className="px-3 py-1.5 text-[11px]" style={{ color: '#c2693f' }}>{providersError}</div>}
+                      {providers.length === 0 && !providersError && (
+                        <div className="px-3 py-2 text-[11px] text-ink2 leading-snug">没有可用的模型供应商（后端 .dev.vars 没配渠道）</div>
+                      )}
+                      {providers.map((p) => {
+                        // 老渠道(provider 空串)的后端选择 = OPENAI_* 优先否则 Anthropic,这里如实标出来。
+                        const active = provider === p.id || (!provider && p.id === (providers.some((x) => x.id === 'opencode') ? 'opencode' : 'anthropic'));
+                        return (
+                          <button
+                            key={p.id}
+                            onClick={() => pickProvider(p.id)}
+                            className="serc w-full text-left px-3 py-2.5 rounded-xl hover:bg-page text-ink-body"
+                          >
+                            <span className="flex items-center gap-2">
+                              <span className="text-[13px]">{p.name}</span>
+                              {active && <span className="text-[10.5px]" style={{ color: 'var(--accent)' }}>当前</span>}
+                            </span>
+                            <span className="block text-[10.5px] text-ink2 mt-0.5">{p.models.join('、')}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
               {/* 项目级 │ 本窗级 的分界线 */}
               <span aria-hidden className="self-stretch w-px my-[3px] bg-line-soft shrink-0" />
               <button
@@ -3816,7 +3936,7 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
               recipeSwitching,
               recipeSwitchNotice,
               model,
-              modelOptions: DESK_MODELS,
+              modelOptions,
               onPickModel: pickModel,
               sending,
             }}
@@ -4078,10 +4198,22 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
                 </div>
                 {bookProgress[bookWin] && (
                   <div style={{ marginTop: 14 }}>
+                    {bookProgress[bookWin].total != null && bookProgress[bookWin].total > 0 && (
+                      <div style={{ height: 6, borderRadius: 3, background: 'var(--line-soft)', overflow: 'hidden', marginBottom: 10 }}>
+                        <div style={{ height: '100%', width: `${Math.round((bookProgress[bookWin].done / bookProgress[bookWin].total) * 100)}%`, background: 'var(--accent)', borderRadius: 3 }} />
+                      </div>
+                    )}
                     {(bookProgress[bookWin].done > 0 || (bookProgress[bookWin].already ?? 0) > 0 || bookProgress[bookWin].remaining > 0) && (
                       <div style={{ fontSize: 12.5, color: 'var(--ink2)' }}>
                         已生成 {bookProgress[bookWin].done} 章{bookProgress[bookWin].total !== undefined ? ` / 共 ${bookProgress[bookWin].total} 章` : ''}
                         {bookProgress[bookWin].remaining > 0 ? `,还有 ${bookProgress[bookWin].remaining} 章待续` : ''}
+                      </div>
+                    )}
+                    {bookProgress[bookWin].generating && (
+                      <div style={{ fontSize: 12.5, color: 'var(--ink2)', marginTop: 6 }}>
+                        {bookProgress[bookWin].total != null && bookProgress[bookWin].total > 0
+                          ? `正在生成第 ${Math.min(bookProgress[bookWin].done + 1, bookProgress[bookWin].total)}/${bookProgress[bookWin].total} 章…`
+                          : '正在生成…'}
                       </div>
                     )}
                     {bookProgress[bookWin].error && (
@@ -4099,11 +4231,11 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
                 <div style={{ display: 'flex', gap: 8, marginTop: 18 }}>
                   <button
                     className="serc"
-                    onClick={() => runBook(bookWin)}
-                    disabled={bookBusy}
+                    onClick={() => (bookProgress[bookWin]?.generating ? stopBook(bookWin) : runBook(bookWin))}
+                    disabled={bookBusy && !bookProgress[bookWin]?.generating}
                     style={{ ...btnPrimaryStyle, flex: 1, textAlign: 'center', opacity: bookBusy ? 0.6 : 1 }}
                   >
-                    {bookBusy ? '生成中…' : (bookProgress[bookWin] && bookProgress[bookWin].remaining > 0 ? `继续生成(${bookProgress[bookWin].remaining})` : '开始生成')}
+                    {bookProgress[bookWin]?.generating ? '停止' : (bookProgress[bookWin] && bookProgress[bookWin].remaining > 0 ? `继续生成(${bookProgress[bookWin].remaining})` : '开始生成')}
                   </button>
                 </div>
               </div>
