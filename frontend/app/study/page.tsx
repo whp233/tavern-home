@@ -8,6 +8,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import HeatBg from '../HeatBg';
 import ReadingCorner from './ReadingCorner';
 import TypingDesk, { type TypingDeskHandle } from './TypingDesk';
+import ProviderConfigRoom, { type ProviderCfgRow } from './ProviderConfigRoom';
 import {
   LoreTriggerFields, DEFAULT_LORE_TRIGGER, triggerKeysFromText, triggerModeForSave,
   type LoreTriggerValue, type LorePosition, type CharacterFields,
@@ -34,7 +35,7 @@ type SearchResult = {
   chapter?: string | null; tags: string[]; created_at: string; preview: string; score?: number;
 };
 
-type View = 'shelf' | 'project' | 'detail' | 'reading' | 'desk';
+type View = 'shelf' | 'project' | 'detail' | 'reading' | 'desk' | 'providers';
 type DetailMode = 'view' | 'edit' | 'new';
 // 读书角内部主tab(章节工坊并入读书角)——两个文件各自留一份同名类型,本仓惯例
 // (同 ProjectField 组件独立成文件那条头注释),不为这一个小 union 类型专门拉共享文件。
@@ -136,13 +137,14 @@ const clamp2: React.CSSProperties = {
   overflow: 'hidden',
 };
 
-// ── 左廊三扇门 ──
-// 左廊常驻(书架/写作/读书角):不同视图不再各自整页接管,而是共享同一个外壳,
+// ── 左廊四扇门 ──
+// 左廊常驻(书架/写作/读书角/供应商):不同视图不再各自整页接管,而是共享同一个外壳,
 // 点门只切换 sty-main(stage)内部渲染的内容,避免整页跳变。
 const RAIL_DOORS: { view: View; icon: string; label: string }[] = [
   { view: 'shelf', icon: '架', label: '书架' },
   { view: 'desk', icon: '写', label: '打字桌' },
   { view: 'reading', icon: '读', label: '读书角' },
+  { view: 'providers', icon: '商', label: '供应商' },
 ];
 // 响应式只靠这段纯 CSS(媒体查询)判断宽窄,不用 window.innerWidth——那样首屏 SSR/hydration 值对不上
 // 客户端真实宽度,会闪一下或报 mismatch。断点取 700px(>700 才算桌面)。
@@ -310,6 +312,28 @@ export default function StudyPage() {
   // 去重(by_project的key本来就是去重的)+ 中文排序。
   const projectOptions = stats ? Object.keys(stats.by_project).filter((p) => p.trim()).sort((a, b) => a.localeCompare(b, 'zh')) : [];
 
+  // ── 供应商引导横幅:进书架时拉一次已配置供应商(缓存进 state;供应商房间增改删后经 onChanged
+  //    拨号刷新)。providers 为空 = 全新状态 → 书架顶部挂「去配置」横幅 + 顶栏「商」入口(已配则横幅消失)。
+  const [providerCfg, setProviderCfg] = useState<ProviderCfgRow[] | null>(null);
+  const [providerCfgError, setProviderCfgError] = useState('');
+  const providerCfgSeqRef = useRef(0);
+  const [providerCfgNonce, setProviderCfgNonce] = useState(0);
+  useEffect(() => {
+    if (!envOk) { setProviderCfgError('环境变量没配好'); return; }
+    const tok = ++providerCfgSeqRef.current;
+    (async () => {
+      try {
+        const res = await fetch(`${base}/api/oc/desk/provider-config`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const d = await res.json().catch(() => null);
+        if (!d || d.success === false) throw new Error(d?.error || '后端报错');
+        if (tok !== providerCfgSeqRef.current) return;
+        setProviderCfg(Array.isArray(d.providers) ? d.providers : []);
+        setProviderCfgError('');
+      } catch (e: any) { if (tok === providerCfgSeqRef.current) setProviderCfgError(e.message || '供应商拉不出来'); }
+    })();
+  }, [base, envOk, providerCfgNonce]);
+
   // ── 项目视图:project/category/keyword/listNonce 变了就重新拉列表(关键词做个小防抖) ──
   useEffect(() => {
     if (view !== 'project' || currentProject === null) return;
@@ -401,7 +425,7 @@ export default function StudyPage() {
       try {
         const params = new URLSearchParams(window.location.search);
         const v = params.get('v');
-        if (v === 'reading' || v === 'desk') {
+        if (v === 'reading' || v === 'desk' || v === 'providers') {
           setView(v);
           if (v === 'reading') {
             const t = params.get('t');
@@ -454,7 +478,7 @@ export default function StudyPage() {
   useEffect(() => {
     if (!restored) return;
     const params = new URLSearchParams();
-    if (view === 'reading' || view === 'desk') {
+    if (view === 'reading' || view === 'desk' || view === 'providers') {
       params.set('v', view);
       if (view === 'reading' && readingTab === 'chapters') {
         params.set('t', 'chapters');
@@ -670,7 +694,7 @@ export default function StudyPage() {
         }}
       >
 
-        {/* 左廊三扇门——桌面竖排常驻/窄屏顶部横排可滚(响应式全靠上面 RAIL_CSS 的媒体查询,
+        {/* 左廊四扇门——桌面竖排常驻/窄屏顶部横排可滚(响应式全靠上面 RAIL_CSS 的媒体查询,
             这里 JSX 不分支)。"← 家"挪进廊子顶头,几扇门下面跟着,当前门高亮(书架门在 project/detail
             子视图里也算亮,见 isDoorActive)。任何视图下都渲在这里,不会因为切到写作就消失。 */}
         <nav className={`sty-rail${railCollapsed ? ' collapsed' : ''}`} aria-label="书房导览" style={{ background: 'var(--scale-0)' }}>
@@ -704,13 +728,22 @@ export default function StudyPage() {
 
         <div className="sty-main">
         {view === 'desk' ? (
-          <TypingDesk ref={typingDeskRef} base={base} envOk={envOk} onBack={() => navigate('shelf')} />
+          <TypingDesk ref={typingDeskRef} base={base} envOk={envOk} onBack={() => navigate('shelf')} onManageProviders={() => navigate('providers')} />
         ) : (
         <div className="sty-scroll">
 
         {/* ══ 一、书架首页 ══ */}
         {view === 'shelf' && (
           <>
+            {/* 供应商首次引导横幅:全新状态(provider-config 空)才显示,配好即消失——
+                玻璃卡片风,点「去配置」进供应商房间(左廊第四扇门「商」)。 */}
+            {Array.isArray(providerCfg) && providerCfg.length === 0 && !providerCfgError && (
+              <div className="card" style={{ ...glassCardStyle, padding: '18px 24px', marginBottom: 24, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+                <span className="serc" style={{ fontSize: 15, color: 'var(--ink-deep)' }}>还没有配置模型供应商，AI 写作暂时不可用</span>
+                <button className="serc" onClick={() => navigate('providers')} style={{ ...btnPrimaryStyle, marginLeft: 'auto', whiteSpace: 'nowrap' }}>去配置</button>
+              </div>
+            )}
+
             {/* 语义搜索卡 */}
             <div className="card" style={{ ...cardStyle, padding: '20px 24px', marginBottom: 24 }}>
               <div className="serc" style={{ fontSize: 17, color: 'var(--ink-deep)', marginBottom: 12 }}>语义搜</div>
@@ -783,7 +816,7 @@ export default function StudyPage() {
                   {/* 新建项目入口:project 本身没有建档仪式,第一次用哪个名字它就存在——这里只是替
                       空库/新故事把"进格子"这一步摆到门口(进去后「+ 新增」自动带上项目名)。
                       Enter 提交须避让输入法组字(isComposing)。 */}
-                  <div style={{ display: 'flex', gap: 8, maxWidth: 420 }}>
+                  <div style={{ display: 'flex', gap: 8, maxWidth: 540 }}>
                     <input
                       value={newProjName}
                       onChange={(e) => setNewProjName(e.target.value)}
@@ -803,6 +836,15 @@ export default function StudyPage() {
                     >
                       ＋ 新建项目
                     </button>
+                    {/* 「商」单字入口,与「＋ 新建项目」齐平——供应商房间的门口(左廊第四扇门同款入口) */}
+                    <button
+                      className="serc"
+                      onClick={() => navigate('providers')}
+                      title="供应商：模型走哪个渠道"
+                      style={{ ...pillStyle, flex: 'none' }}
+                    >
+                      商
+                    </button>
                   </div>
                 </>
               )}
@@ -821,6 +863,16 @@ export default function StudyPage() {
             chaptersProject={readingProject}
             onChaptersProjectChange={setReadingProject}
             projectOptions={projectOptions}
+          />
+        )}
+
+        {/* ══ 供应商房间(左廊第四扇门「商」,整页玻璃卡片风,不做弹层;增改删后经 onChanged 刷新书架横幅) ══ */}
+        {view === 'providers' && (
+          <ProviderConfigRoom
+            base={base}
+            envOk={envOk}
+            onGoBack={() => navigate('shelf')}
+            onChanged={() => setProviderCfgNonce((n) => n + 1)}
           />
         )}
 

@@ -1,6 +1,7 @@
 import type { ModelBackend, ModelUsage, StreamChatArgs, StreamChatResult } from '../core/modelBackend.ts';
 import { createLiteralThinkingSplitter } from '../shared/text.ts';
 import { buildModelParams } from '../chat/models.ts';
+import type { ProviderOverride } from '../core/providerConfigStore.ts';
 
 const ZERO_USAGE = (): ModelUsage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 
@@ -227,64 +228,132 @@ const ANTHROPIC_DEFAULT_MODELS = [
   'claude-opus-4-7', 'claude-opus-4-8', 'claude-opus-5',
 ];
 
-const DESK_PROVIDER_DEFS: DeskProviderDef[] = [
+// 静态注册表本身也导出(路由要遍历 def 的 name/protocol/prefix 组装 /provider-config 行)。
+export const DESK_PROVIDER_DEFS: DeskProviderDef[] = [
   { id: 'opencode', name: 'opencode', prefix: 'OPENAI', protocol: 'openai', defaultModels: ['deepseek-chat'] },
   { id: 'anthropic', name: 'Anthropic', prefix: 'ANTHROPIC', protocol: 'anthropic', defaultModels: ANTHROPIC_DEFAULT_MODELS },
   { id: 'deepseek', name: 'DeepSeek', prefix: 'DEEPSEEK', protocol: 'openai', defaultModels: ['deepseek-chat'] },
   { id: 'siliconflow', name: '硅基流动', prefix: 'SILICONFLOW', protocol: 'openai', defaultModels: ['deepseek-ai/DeepSeek-V3'] },
 ];
 
+// 注册表 id 列表,给路由做 PUT /provider-config 的 id 合法性校验(或注册表项,或 custom:<随机>)。
+export const PROVIDER_REGISTRY_IDS: string[] = DESK_PROVIDER_DEFS.map((def) => def.id);
+
+// 网页端覆盖合成:返回 env 的浅拷贝,对注册表内的 override 按 def 前缀把有值的字段写成
+// <前缀>_API_KEY/_BASE_URL/_MODEL/_MAX_TOKENS。无 override 或 override 不命注册表 = 一字不差原样返回。
+// 覆盖优先于 env:合成后 env[<前缀>_API_KEY] 就是 override 里的值,后续 resolveDeskProvider /
+// deskProviderConfigured / listProviders 全部照读 env,零额外分支。
+export function mergeProviderEnv(env: DeskBackendEnv, overrides: ProviderOverride[] = []): DeskBackendEnv {
+  const merged: DeskBackendEnv = { ...env };
+  for (const o of overrides) {
+    const def = DESK_PROVIDER_DEFS.find((d) => d.id === o.id);
+    if (!def) continue;
+    if (o.apiKey !== undefined) merged[`${def.prefix}_API_KEY`] = o.apiKey;
+    if (o.baseUrl !== undefined) merged[`${def.prefix}_BASE_URL`] = o.baseUrl;
+    if (o.model !== undefined) merged[`${def.prefix}_MODEL`] = o.model;
+    if (o.maxTokens !== undefined) merged[`${def.prefix}_MAX_TOKENS`] = o.maxTokens;
+  }
+  return merged;
+}
+
 // "配了"的判据:有 key 或配了 baseUrl(同老渠道 OPENAI 分支的判定口径——配了 baseUrl 但没 key 时不判为
-// 未配置,让后端在调用期回 config 错误,不悄悄回落)。
-function deskProviderConfigured(env: DeskBackendEnv, def: DeskProviderDef): boolean {
+// 未配置,让后端在调用期回 config 错误,不悄悄回落)。导出给 /provider-config 路由判断 source:'env'。
+export function deskProviderConfigured(env: DeskBackendEnv, def: DeskProviderDef): boolean {
   return Boolean(env[`${def.prefix}_API_KEY`]) || env[`${def.prefix}_BASE_URL`] !== undefined;
 }
 
 // 解析单个供应商的完整配置;返回 null = 没这个供应商或没配。handleDeskChat 的早验与 makeDeskBackend
-// 的分发共用这一个事实源,不许各写一套判据。
-export function resolveDeskProvider(env: DeskBackendEnv, provider: string): DeskProviderConfig | null {
+// 的分发共用这一个事实源,不许各写一套判据。overrides 缺省=纯 env(老行为一字不变)。
+// 判据口径:注册表项先 merge(网页端覆盖优先于 env);custom:* 项必须命中 overrides 且有 key 或 baseUrl。
+export function resolveDeskProvider(env: DeskBackendEnv, provider: string, overrides: ProviderOverride[] = []): DeskProviderConfig | null {
+  const merged = mergeProviderEnv(env, overrides);
   const def = DESK_PROVIDER_DEFS.find((d) => d.id === provider);
-  if (!def || !deskProviderConfigured(env, def)) return null;
-  const prefix = def.prefix;
-  return {
-    id: def.id,
-    name: def.name,
-    protocol: def.protocol,
-    apiKey: String(env[`${prefix}_API_KEY`] ?? ''),
-    baseUrl: env[`${prefix}_BASE_URL`],
-    model: env[`${prefix}_MODEL`],
-    maxTokens: env[`${prefix}_MAX_TOKENS`],
-    allowHttpLocalhost: env[`${prefix}_ALLOW_HTTP_LOCALHOST`],
-  };
+  if (def) {
+    if (!deskProviderConfigured(merged, def)) return null;
+    const prefix = def.prefix;
+    return {
+      id: def.id,
+      name: def.name,
+      protocol: def.protocol,
+      apiKey: String(merged[`${prefix}_API_KEY`] ?? ''),
+      baseUrl: merged[`${prefix}_BASE_URL`],
+      model: merged[`${prefix}_MODEL`],
+      maxTokens: merged[`${prefix}_MAX_TOKENS`],
+      allowHttpLocalhost: merged[`${prefix}_ALLOW_HTTP_LOCALHOST`],
+    };
+  }
+  if (provider.startsWith('custom:')) {
+    const o = overrides.find((x) => x.id === provider);
+    if (!o || (!o.apiKey && !o.baseUrl)) return null;
+    return {
+      id: o.id,
+      name: o.name || o.id,
+      protocol: o.protocol || 'openai',
+      apiKey: o.apiKey ?? '',
+      baseUrl: o.baseUrl,
+      model: o.model,
+      maxTokens: o.maxTokens,
+    };
+  }
+  return null;
 }
 
 // 已配置供应商列表 + 各自模型(前端「商」弹层 GET /api/oc/desk/providers 拉的就是这个)。
 // 模型口径:anthropic 走 claude 白名单;OpenAI 兼容渠道优先用 env 的 <PREFIX>_MODEL(wire 模型名),
-// 没配才落注册表缺省。
-export function listProviders(env: DeskBackendEnv): DeskProviderInfo[] {
-  return DESK_PROVIDER_DEFS.filter((def) => deskProviderConfigured(env, def)).map((def) => {
-    const envModel = env[`${def.prefix}_MODEL`];
+// 没配才落注册表缺省。overrides 先 merge 再判注册表(网页端覆盖优先),随后追加 custom:* 自定义项。
+export function listProviders(env: DeskBackendEnv, overrides: ProviderOverride[] = []): DeskProviderInfo[] {
+  const merged = mergeProviderEnv(env, overrides);
+  const registry = DESK_PROVIDER_DEFS.filter((def) => deskProviderConfigured(merged, def)).map((def) => {
+    const envModel = merged[`${def.prefix}_MODEL`];
     const models = def.protocol === 'anthropic'
       ? def.defaultModels
       : (typeof envModel === 'string' && envModel ? [envModel] : def.defaultModels);
     return { id: def.id, name: def.name, protocol: def.protocol, models };
   });
+  const custom = overrides
+    .filter((o) => o.id.startsWith('custom:'))
+    .map((o) => ({ id: o.id, name: o.name || o.id, protocol: o.protocol || 'openai' as const, models: o.model ? [o.model] : [] }));
+  return [...registry, ...custom];
 }
 
 // 打字桌后端工厂:provider 未传 = 老行为(OPENAI 渠道配了就走 OpenAI 兼容,否则回落 Anthropic;
 // 配了 baseUrl 但没 key 时 OpenAI 后端会在调用期回 config 错误,不悄悄回落 Anthropic)。
-// provider 传了 = 按供应商 id 从 env 取配置构建;不存在/没配 → 抛 Error 明示,不悄悄回落。
-export function makeDeskBackend(env: DeskBackendEnv, provider?: string): ModelBackend {
+// provider 传了 = 按供应商 id 从 env(+overrides 网页端覆盖)取配置构建;不存在/没配 → 抛 Error 明示,不悄悄回落。
+export function makeDeskBackend(env: DeskBackendEnv, provider?: string, overrides: ProviderOverride[] = []): ModelBackend {
   if (!provider) {
     if (env.OPENAI_API_KEY || env.OPENAI_BASE_URL !== undefined) {
       return new OpenAIStreamBackend({ apiKey: env.OPENAI_API_KEY ?? '', baseUrl: env.OPENAI_BASE_URL, model: env.OPENAI_MODEL, maxTokens: env.OPENAI_MAX_TOKENS, allowHttpLocalhost: env.OPENAI_ALLOW_HTTP_LOCALHOST });
     }
     return new AnthropicStreamBackend({ apiKey: env.ANTHROPIC_API_KEY ?? '', baseUrl: env.ANTHROPIC_BASE_URL, userId: USER_ID });
   }
-  const cfg = resolveDeskProvider(env, provider);
+  const cfg = resolveDeskProvider(env, provider, overrides);
   if (!cfg) throw new Error(`模型供应商未配置或不存在: ${provider}`);
   if (cfg.protocol === 'anthropic') {
     return new AnthropicStreamBackend({ apiKey: cfg.apiKey, baseUrl: cfg.baseUrl, userId: USER_ID });
   }
   return new OpenAIStreamBackend({ apiKey: cfg.apiKey, baseUrl: cfg.baseUrl, model: cfg.model, maxTokens: cfg.maxTokens, allowHttpLocalhost: cfg.allowHttpLocalhost });
+}
+
+// ── 「获取模型名称」辅助(网页端拉模型列表用,纯函数便于测试) ──
+// OpenAI 兼容渠道:baseUrl 是 API base(openAiEndpoint 会再补 /chat/completions),models 端点 = {base}/models;
+// anthropic:baseUrl 是完整 Messages 端点(.../v1/messages),models 端点 = 去掉 /messages 再拼 /models。
+export function providerModelsUrl(protocol: 'openai' | 'anthropic', baseUrl?: string): string {
+  if (protocol === 'anthropic') {
+    const messages = baseUrl && baseUrl.trim() ? baseUrl.trim() : 'https://api.anthropic.com/v1/messages';
+    return messages.replace(/\/+$/, '').replace(/\/messages$/, '') + '/models';
+  }
+  const base = baseUrl && baseUrl.trim() ? baseUrl.trim() : 'https://api.deepseek.com/v1';
+  return base.replace(/\/chat\/completions$/, '').replace(/\/+$/, '') + '/models';
+}
+
+// 两个协议的 /models 响应都长成 { data: [{ id: 'xxx' }, ...] },这里统一抽 id 列表。
+export function parseProviderModels(data: unknown): string[] {
+  if (!data || typeof data !== 'object' || !Array.isArray((data as { data?: unknown }).data)) return [];
+  const models: string[] = [];
+  for (const m of (data as { data: unknown[] }).data) {
+    if (m && typeof m === 'object' && typeof (m as { id?: unknown }).id === 'string' && (m as { id: string }).id) {
+      models.push((m as { id: string }).id);
+    }
+  }
+  return models;
 }

@@ -35,7 +35,13 @@ import { deskDryrun } from '../../src/chat/deskAssemble';
 import { maybeFoldDeskTimeline } from '../../src/chat/deskTimeline';
 import { deskBoardRefresh } from '../../src/chat/deskBoardRefresh';
 import { handleDeskChat, type DeskChatStorage } from '../../src/chat/desk';
-import { listProviders } from '../../src/adapters/streamModelBackends';
+import {
+  listProviders, PROVIDER_REGISTRY_IDS, DESK_PROVIDER_DEFS, deskProviderConfigured, mergeProviderEnv,
+  resolveDeskProvider, providerModelsUrl, parseProviderModels,
+  type DeskBackendEnv,
+} from '../../src/adapters/streamModelBackends';
+import { D1ProviderConfigStore } from './adapters/d1ProviderConfigStore.ts';
+import type { ProviderOverride } from '../../src/core/providerConfigStore.ts';
 
 interface Env extends AuthEnv {
   OC_DB: D1Database;
@@ -183,6 +189,59 @@ function deskAssemblyStorage(env: Env): { deskAssets: D1DeskAssetStorage; deskSt
     deskStory: new D1DeskStoryStorage(env.OC_DB),
     semantic: env.OC_VECTORIZE && env.AI ? new VectorizeSemanticSearch(env.OC_VECTORIZE, env.AI) : undefined,
   };
+}
+
+// ===== 供应商配置行(网页端 GET /provider-config 与 PUT 响应共用同一 shape)=====
+// 覆盖全部"已配置"供应商:注册表项(override 有 → source:'override',否则 env 有配置 → source:'env')
+// + custom:* 自定义项(source:'override')。key 的取值 = override 优先于 env(merged 已折叠),便于
+// 返回 apiKeyTail 而不泄露整把 key。
+interface ProviderConfigRow {
+  id: string;
+  name: string;
+  protocol: 'openai' | 'anthropic';
+  source: 'override' | 'env';
+  hasApiKey: boolean;
+  apiKeyTail: string;
+  baseUrl: string | null;
+  model: string | null;
+  maxTokens: number | null;
+}
+
+function providerConfigRows(env: DeskBackendEnv, overrides: ProviderOverride[]): ProviderConfigRow[] {
+  const merged = mergeProviderEnv(env, overrides);
+  const rows: ProviderConfigRow[] = [];
+  for (const def of DESK_PROVIDER_DEFS) {
+    const o = overrides.find((x) => x.id === def.id);
+    const configured = o ? true : deskProviderConfigured(merged, def);
+    if (!configured) continue;
+    const key = merged[`${def.prefix}_API_KEY`];
+    rows.push({
+      id: def.id,
+      name: def.name,
+      protocol: def.protocol,
+      source: o ? 'override' : 'env',
+      hasApiKey: !!key,
+      apiKeyTail: key ? String(key).slice(-4) : '',
+      baseUrl: merged[`${def.prefix}_BASE_URL`] || null,
+      model: merged[`${def.prefix}_MODEL`] || null,
+      maxTokens: merged[`${def.prefix}_MAX_TOKENS`] ?? null,
+    });
+  }
+  for (const o of overrides) {
+    if (!o.id.startsWith('custom:')) continue;
+    rows.push({
+      id: o.id,
+      name: o.name || o.id,
+      protocol: o.protocol || 'openai',
+      source: 'override',
+      hasApiKey: !!o.apiKey,
+      apiKeyTail: o.apiKey ? String(o.apiKey).slice(-4) : '',
+      baseUrl: o.baseUrl || null,
+      model: o.model || null,
+      maxTokens: o.maxTokens ?? null,
+    });
+  }
+  return rows;
 }
 
 async function sha256(value: string): Promise<string> {
@@ -755,14 +814,152 @@ async function handleDeskAdmin(request: Request, env: Env, url: URL, ctx: Execut
   // atomic floor/window commit all live in chat/desk.ts; this route only wires the D1 storage
   // and the background waitUntil hooks (usage logging, auto-fold) into it.
   // Desk providers: the "商" popover fetches the configured supplier groups (id + name + models).
+  // Provider config (网页端增改删供应商):覆盖存 oc_state(provider_config:<id>),merge 到 env 立即生效。
   if (url.pathname === '/api/oc/desk/providers' && request.method === 'GET') {
-    return json(request, env, { success: true, providers: listProviders(env as any) });
+    const overrides = await new D1ProviderConfigStore(env.OC_DB).list();
+    return json(request, env, { success: true, providers: listProviders(env as any, overrides) });
+  }
+  if (url.pathname === '/api/oc/desk/provider-config' && request.method === 'GET') {
+    const overrides = await new D1ProviderConfigStore(env.OC_DB).list();
+    return json(request, env, { success: true, providers: providerConfigRows(env as any, overrides) });
+  }
+  if (url.pathname === '/api/oc/desk/provider-config' && request.method === 'PUT') {
+    const read = await deskReadJsonLimited(request, { maxBytes: JSON_LIMIT });
+    if ('resp' in read) return read.resp;
+    const body = read.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return json(request, env, { success: false, error: 'request body must be a JSON object' }, 400);
+    }
+    const id = typeof body.id === 'string' ? body.id.trim() : '';
+    const isRegistry = PROVIDER_REGISTRY_IDS.includes(id);
+    const isCustom = /^custom:.+/.test(id);
+    if (!isRegistry && !isCustom) {
+      return json(request, env, { success: false, error: 'id 必须是注册表供应商或 custom:<id>' }, 400);
+    }
+    const def = isRegistry ? DESK_PROVIDER_DEFS.find((d) => d.id === id) : undefined;
+    if (body.protocol !== undefined && (body.protocol !== 'openai' && body.protocol !== 'anthropic')) {
+      return json(request, env, { success: false, error: 'protocol 只允许 openai 或 anthropic' }, 400);
+    }
+    if (isCustom && body.protocol !== undefined && body.protocol !== 'openai' && body.protocol !== 'anthropic') {
+      return json(request, env, { success: false, error: '自定义供应商协议只允许 openai 或 anthropic' }, 400);
+    }
+    if (isRegistry && body.protocol !== undefined && body.protocol !== def!.protocol) {
+      return json(request, env, { success: false, error: `注册表供应商 ${id} 的协议不可修改` }, 400);
+    }
+    const store = new D1ProviderConfigStore(env.OC_DB);
+    const existing = await store.get(id);
+    // 自定义供应商协议：body.protocol 优先（新开选预设时带上），否则沿用已存的，再兜底 openai。
+    const customProtocol: 'openai' | 'anthropic' = body.protocol === 'anthropic'
+      ? 'anthropic'
+      : (existing && existing.protocol === 'anthropic' ? 'anthropic' : 'openai');
+    const base: ProviderOverride = existing
+      ? { ...existing, protocol: isCustom ? customProtocol : def!.protocol }
+      : { id, protocol: isCustom ? customProtocol : def!.protocol };
+    // apiKey/baseUrl/model/maxTokens:undefined 或空串 = 保留原值(编辑不覆盖);有值才写,且类型必须对。
+    if (body.apiKey !== undefined && body.apiKey !== '') {
+      if (typeof body.apiKey !== 'string') return json(request, env, { success: false, error: 'apiKey 必须是字符串' }, 400);
+      base.apiKey = body.apiKey;
+    }
+    if (body.baseUrl !== undefined && body.baseUrl !== '') {
+      if (typeof body.baseUrl !== 'string') return json(request, env, { success: false, error: 'baseUrl 必须是字符串' }, 400);
+      base.baseUrl = body.baseUrl;
+    }
+    if (body.model !== undefined && body.model !== '') {
+      if (typeof body.model !== 'string') return json(request, env, { success: false, error: 'model 必须是字符串' }, 400);
+      base.model = body.model;
+    }
+    if (body.maxTokens !== undefined && body.maxTokens !== '') {
+      if (typeof body.maxTokens !== 'number' || !Number.isFinite(body.maxTokens)) {
+        return json(request, env, { success: false, error: 'maxTokens 必须是数字' }, 400);
+      }
+      base.maxTokens = body.maxTokens;
+    }
+    if (body.name !== undefined && body.name !== '') {
+      if (typeof body.name !== 'string') return json(request, env, { success: false, error: 'name 必须是字符串' }, 400);
+      base.name = body.name;
+    }
+    if (isCustom && !existing) {
+      const nameOk = typeof base.name === 'string' && base.name.trim() !== '';
+      const credOk = (typeof base.apiKey === 'string' && base.apiKey.trim() !== '') || (typeof base.baseUrl === 'string' && base.baseUrl.trim() !== '');
+      if (!nameOk || !credOk) {
+        return json(request, env, { success: false, error: '新建自定义供应商必须提供 name,以及 apiKey/baseUrl 至少一个' }, 400);
+      }
+    }
+    await store.put(base);
+    const overrides = await store.list();
+    const row = providerConfigRows(env as any, overrides).find((r) => r.id === id);
+    return json(request, env, { success: true, provider: row });
+  }
+  if (url.pathname === '/api/oc/desk/provider-config' && request.method === 'DELETE') {
+    const id = (url.searchParams.get('id') || '').trim();
+    if (!id) return json(request, env, { success: false, error: 'id 必填' }, 400);
+    await new D1ProviderConfigStore(env.OC_DB).remove(id);
+    return json(request, env, { success: true, id });
+  }
+  // 「获取模型名称」：从供应商 API 拉模型列表(前端表单里点按钮时调)。走后端代理免得浏览器撞 CORS。
+  // body: { id?, baseUrl?, apiKey?, protocol }——id 给了就按已存配置解析(编辑态没改 key 时用),
+  // baseUrl/apiKey 给了优先用表单里的(新建态/正在改 key 时)。
+  if (url.pathname === '/api/oc/desk/provider-models' && request.method === 'POST') {
+    const read = await deskReadJsonLimited(request, { maxBytes: JSON_LIMIT });
+    if ('resp' in read) return read.resp;
+    const body = read.body && typeof read.body === 'object' ? read.body : {};
+    let protocol: 'openai' | 'anthropic' = body.protocol === 'anthropic' ? 'anthropic' : 'openai';
+    let baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : '';
+    let apiKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
+    if (typeof body.id === 'string' && body.id.trim()) {
+      const overrides = await new D1ProviderConfigStore(env.OC_DB).list();
+      const cfg = resolveDeskProvider(env as any, body.id.trim(), overrides);
+      if (!cfg) return json(request, env, { success: false, error: `供应商 ${body.id} 未配置` }, 400);
+      protocol = cfg.protocol;
+      if (!baseUrl) baseUrl = cfg.baseUrl || '';
+      if (!apiKey) apiKey = cfg.apiKey || '';
+    }
+    if (!apiKey) {
+      return json(request, env, { success: false, error: '要拉模型得先有 API Key（表单里填，或选一个已配置的供应商）' }, 400);
+    }
+    const modelsUrl = providerModelsUrl(protocol, baseUrl);
+    let u: URL;
+    try { u = new URL(modelsUrl); } catch {
+      return json(request, env, { success: false, error: 'Base URL 不是合法 URL' }, 400);
+    }
+    const localHttp = u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1');
+    if (u.protocol !== 'https:' && !localHttp) {
+      return json(request, env, { success: false, error: 'Base URL 必须是 https（或本机 http://localhost）' }, 400);
+    }
+    const mode: 'models' | 'test' = body.mode === 'test' ? 'test' : 'models';
+    let resp: Response;
+    try {
+      const headers: Record<string, string> = protocol === 'anthropic'
+        ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
+        : { authorization: `Bearer ${apiKey}` };
+      resp = await fetch(modelsUrl, { method: 'GET', headers, signal: AbortSignal.timeout(12_000) });
+    } catch (e: any) {
+      if (mode === 'test') return json(request, env, { success: true, ok: false, message: `连接失败：${e?.message || '网络错误'}` });
+      return json(request, env, { success: false, error: `拉模型请求失败：${e?.message || '网络错误'}` }, 502);
+    }
+    if (!resp.ok) {
+      const detail = (await resp.text().catch(() => '')).slice(0, 200);
+      if (mode === 'test') return json(request, env, { success: true, ok: false, message: `连接失败 HTTP ${resp.status}${detail ? `：${detail}` : ''}` });
+      return json(request, env, { success: false, error: `拉模型失败 HTTP ${resp.status}${detail ? `：${detail}` : ''}` }, 502);
+    }
+    const data: unknown = await resp.json().catch(() => null);
+    const models = parseProviderModels(data);
+    if (mode === 'test') {
+      return json(request, env, {
+        success: true, ok: true,
+        message: models.length ? `连接正常，拉到 ${models.length} 个模型` : '连接正常（但没解析到模型列表）',
+        modelCount: models.length,
+      });
+    }
+    if (!models.length) return json(request, env, { success: false, error: '没拉到模型，检查 Base URL 与 Key' }, 400);
+    return json(request, env, { success: true, models });
   }
   if (url.pathname === '/api/oc/desk/chat' && request.method === 'POST') {
     const read = await deskReadJsonLimited(request);
     if ('resp' in read) return read.resp;
     const storage: DeskChatStorage = { deskStorage: new D1DeskStorage(env.OC_DB), turnStorage: new D1DeskTurnStorage(env.OC_DB), ...deskAssemblyStorage(env) };
-    return handleDeskChat(env as any, read.body, storage, request.signal, (promise) => ctx.waitUntil(promise));
+    const overrides = await new D1ProviderConfigStore(env.OC_DB).list();
+    return handleDeskChat(env as any, read.body, storage, request.signal, (promise) => ctx.waitUntil(promise), overrides);
   }
 
   return null;

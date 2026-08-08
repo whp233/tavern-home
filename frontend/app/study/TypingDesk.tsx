@@ -400,7 +400,7 @@ function FloorActionRow({
 // 组件这时还没被卸载,横幅出得来),放行就顺手把飞着的流掐掉+世界代数翻篇(genRef++)再返回 true。
 export type TypingDeskHandle = { requestLeave: () => boolean };
 
-const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; onBack: () => void }>(function TypingDesk({ base, envOk, onBack }, deskRef) {
+const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; onBack: () => void; onManageProviders?: () => void }>(function TypingDesk({ base, envOk, onBack, onManageProviders }, deskRef) {
   const [mode, setMode] = useState<'list' | 'write'>('list');
   const [projects, setProjects] = useState<string[]>(DEFAULT_PROJECTS);
   const [project, setProject] = useState<string>(DEFAULT_PROJECTS[0]);
@@ -1592,7 +1592,10 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
     abortRef.current = ac;
     const turn = (async () => {
       let userSaved = false;
-      const outcome = await streamChat({ window_id: windowId, message: msg, channel: 'vps', model, ...(provider ? { provider } : {}) }, {
+      // 用户没显式选供应商、但已配列表非空时,默认带第一个(Web 配的渠道也可能在列)——否则走后端
+      // env 兜底,全新状态(.dev.vars 没 key)会报「渠道没配」,而列表第一个明明配好了。
+      const effProvider = provider || (providers.length ? providers[0].id : '');
+      const outcome = await streamChat({ window_id: windowId, message: msg, channel: 'vps', model, ...(effProvider ? { provider: effProvider } : {}) }, {
         onUserSaved: (id) => {
           userSaved = true;
           patchFloor(myGen, userKey, (f) => ({ ...f, id }));
@@ -1692,7 +1695,9 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
     const ac = new AbortController();
     abortRef.current = ac;
     const turn = (async () => {
-      const outcome = await streamChat({ window_id: windowId, roll: true, channel: 'vps', model, ...(provider ? { provider } : {}) }, {
+      // 同 send():未显式选供应商但列表非空 → 默认带第一个(见 send 里 effProvider 注释)。
+      const effProvider = provider || (providers.length ? providers[0].id : '');
+      const outcome = await streamChat({ window_id: windowId, roll: true, channel: 'vps', model, ...(effProvider ? { provider: effProvider } : {}) }, {
         onText: (t) => patchFloor(myGen, f.key, (fl) => ({ ...fl, content: fl.content + t })),
         onThinking: (t) => patchFloor(myGen, f.key, (fl) => ({ ...fl, thinking: (fl.thinking || '') + t })),
       }, ac.signal);
@@ -3098,11 +3103,12 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
                       <div className="px-3 pt-1 pb-1.5 text-[11px] text-ink2 leading-snug">供应商（选中的模型走哪个渠道；选择写进 localStorage 全桌通用）</div>
                       {providersError && <div className="px-3 py-1.5 text-[11px]" style={{ color: '#c2693f' }}>{providersError}</div>}
                       {providers.length === 0 && !providersError && (
-                        <div className="px-3 py-2 text-[11px] text-ink2 leading-snug">没有可用的模型供应商（后端 .dev.vars 没配渠道）</div>
+                        <div className="px-3 py-2 text-[11px] text-ink2 leading-snug">还没有可用的模型供应商（env 或网页端都没配渠道）{onManageProviders ? '——点下方「管理供应商」去配一个' : ''}</div>
                       )}
                       {providers.map((p) => {
-                        // 老渠道(provider 空串)的后端选择 = OPENAI_* 优先否则 Anthropic,这里如实标出来。
-                        const active = provider === p.id || (!provider && p.id === (providers.some((x) => x.id === 'opencode') ? 'opencode' : 'anthropic'));
+                        // active 口径与 send/roll 的默认选择一致:显式选了就标选中的;没选但列表非空
+                        // 时标列表第一个(发送时默认带的也是它)。
+                        const active = provider === p.id || (!provider && providers.length > 0 && p.id === providers[0].id);
                         return (
                           <button
                             key={p.id}
@@ -3117,6 +3123,15 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
                           </button>
                         );
                       })}
+                      {onManageProviders && (
+                        <button
+                          onClick={() => { setProviderMenuOpen(false); onManageProviders(); }}
+                          className="serc w-full text-left px-3 py-2.5 rounded-xl hover:bg-page text-ink-body mt-1 border-t border-line-soft"
+                          style={{ color: 'var(--accent)' }}
+                        >
+                          管理供应商 →
+                        </button>
+                      )}
                     </div>
                   </>
                 )}

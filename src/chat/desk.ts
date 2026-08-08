@@ -21,6 +21,7 @@ import type { Ai, VectorizeIndex } from '../storage/vectorize';
 import { parseStateBoard as parseCoreStateBoard, STATEBOARD_MAX_BYTES as CORE_STATEBOARD_MAX_BYTES } from '../core/stateBoard.ts';
 import type { DeskAssetStorage, DeskStorage, DeskStoryStorage, DeskTurnStorage, SemanticSearchAdapter } from '../core/storage.ts';
 import { makeDeskBackend, resolveDeskProvider } from '../adapters/streamModelBackends.ts';
+import type { ProviderOverride } from '../core/providerConfigStore.ts';
 import { validateDeskChannelConfig } from '../core/deskChannelConfig.ts';
 
 interface DeskChatEnv {
@@ -149,7 +150,8 @@ export async function handleDeskChat(
   params: DeskChatParams,
   storage: DeskChatStorage,
   signal?: AbortSignal,
-  waitUntil?: (promise: Promise<unknown>) => void
+  waitUntil?: (promise: Promise<unknown>) => void,
+  providerOverrides: ProviderOverride[] = []
 ): Promise<Response> {
   // deskReadJsonLimited(index.ts)只挡"不是合法JSON"和"超10MB",合法JSON的 null/数组/字符串
   // 照样会被当成 body 传进来——这里补一道形状闸,同 tools/desk.ts 系列 handler 的开头习惯。
@@ -168,7 +170,7 @@ export async function handleDeskChat(
   // 渠道校验:显式 provider 时验供应商配置(不存在/没配 → 明确报错,不悄悄回落老渠道),老渠道不传
   // provider 走 validateDeskChannelConfig(ANTHROPIC/OPENAI 任一)。
   const provider = typeof params.provider === 'string' ? params.provider.trim() : '';
-  const resolvedProvider = provider ? resolveDeskProvider(env, provider) : null;
+  const resolvedProvider = provider ? resolveDeskProvider(env, provider, providerOverrides) : null;
   if (provider && !resolvedProvider) return errJson(`模型供应商未配置或不存在: ${provider}`, 500);
   const channelError = provider ? null : validateDeskChannelConfig(env);
   if (channelError) return errJson(channelError, 500);
@@ -372,7 +374,7 @@ export async function handleDeskChat(
     const controller = new AbortController();
     const abort = () => controller.abort(); signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) controller.abort();
-    const backend = makeDeskBackend(env, provider || undefined);
+    const backend = makeDeskBackend(env, provider || undefined, providerOverrides);
     let failed = false;
     const result = await backend.streamChat({ system: systemBlocks, prompt: tail, model, signal: controller.signal, onEvent: async (event) => {
       if (clientGone) { controller.abort(); return; }
