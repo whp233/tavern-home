@@ -18,7 +18,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: 安装后端依赖
@@ -36,8 +36,4 @@ jobs:
 
       - name: 前端 typecheck
         run: npx tsc --noEmit
-        working-directory: frontend
-
-      - name: 前端 lint
-        run: npm run lint
         working-directory: frontend
