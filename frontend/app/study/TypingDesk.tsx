@@ -556,6 +556,47 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
     } catch (e: any) { setWinDelError(e.message || '删除失败'); }
   }
 
+  // ── 自动成书(收为章节):POST /windows/:id/book 逐批转写,remaining>0 继续生成 ──
+  const [bookWin, setBookWin] = useState<string | null>(null);
+  const [bookStyle, setBookStyle] = useState<'novel' | 'dialogue'>('novel');
+  const [bookBusy, setBookBusy] = useState(false);
+  const [bookProgress, setBookProgress] = useState<Record<string, { done: number; remaining: number; already?: number; total?: number; error?: string }>>({});
+
+  function openBookModal(id: string) {
+    setBookStyle('novel');
+    setBookProgress((p) => ({ ...p, [id]: { done: 0, remaining: 0, error: '' } }));
+    setBookWin(id);
+  }
+
+  async function runBook(id: string) {
+    setBookBusy(true);
+    setBookProgress((p) => ({ ...p, [id]: { ...(p[id] || { done: 0, remaining: 0 }), error: '' } }));
+    try {
+      const res = await fetch(`${base}/api/oc/desk/windows/${id}/book`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ style: bookStyle }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const d = await res.json().catch(() => null);
+      if (!d || d.success !== true) throw new Error(d?.error || '成书失败(服务端没确认)');
+      setBookProgress((p) => ({
+        ...p,
+        [id]: {
+          done: d.done ?? 0,
+          remaining: d.remaining ?? 0,
+          already: d.already ?? 0,
+          total: d.total_chapters,
+          error: Array.isArray(d.failed) && d.failed.length ? `这轮有 ${d.failed.length} 章失败,点继续生成重试` : '',
+        },
+      }));
+    } catch (e: any) {
+      setBookProgress((p) => ({ ...p, [id]: { ...(p[id] || { done: 0, remaining: 0 }), error: e.message || '成书失败' } }));
+    } finally {
+      setBookBusy(false);
+    }
+  }
+
   // ── 开新窗向导:①项目(下拉可切,可就地起新名)→②配方(下拉;没有就地建)→③标题(可选)→开窗,三步 ──
   const [wizardOpen, setWizardOpen] = useState(false);
   // ①项目改可切换:tab 里没有的项目在向导里必须有路可走;配方已全桌通用,切项目不需要重拉配方
@@ -3855,16 +3896,31 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
               <div key={w.id} onClick={() => enterWindow(w.id)} className="card" style={{ ...cardStyle, padding: '18px 20px', cursor: 'pointer' }}>
                 <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
                   <span className="serc" style={{ fontSize: 15.5, color: 'var(--ink-deep)' }}>{w.title || '未命名窗口'}</span>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onWinDeleteClick(w.id); }}
-                    className="serc"
-                    style={{
-                      fontSize: 11, flex: 'none', border: 'none', background: 'none', cursor: 'pointer', fontFamily: 'inherit',
-                      color: (winDelStage[w.id] || 0) === 1 ? '#c2693f' : 'var(--ink2)',
-                    }}
-                  >
-                    {(winDelStage[w.id] || 0) === 1 ? '真的删?再点一次' : '删除'}
-                  </button>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 'none' }}>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); openBookModal(w.id); }}
+                      className="serc"
+                      disabled={w.floor_count === 0}
+                      title="把聊天楼层自动切章、转写成小说写入读书角"
+                      style={{
+                        fontSize: 11, flex: 'none', border: 'none', background: 'none', fontFamily: 'inherit',
+                        cursor: w.floor_count === 0 ? 'not-allowed' : 'pointer',
+                        color: 'var(--accent)', opacity: w.floor_count === 0 ? 0.4 : 1,
+                      }}
+                    >
+                      收为章节
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onWinDeleteClick(w.id); }}
+                      className="serc"
+                      style={{
+                        fontSize: 11, flex: 'none', border: 'none', background: 'none', cursor: 'pointer', fontFamily: 'inherit',
+                        color: (winDelStage[w.id] || 0) === 1 ? '#c2693f' : 'var(--ink2)',
+                      }}
+                    >
+                      {(winDelStage[w.id] || 0) === 1 ? '真的删?再点一次' : '删除'}
+                    </button>
+                  </div>
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--ink2)', marginTop: 8 }}>{w.floor_count} 楼 · {fmtWin(w.updated_at)} 更新</div>
               </div>
@@ -3987,6 +4043,69 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
                     </button>
                   </>
                 )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 自动成书选择器(收为章节):风格二选一 + 进度/继续生成 */}
+        {bookWin && (
+          <div className="fixed inset-0 z-30 flex items-center justify-center px-6 box-border max-[760px]:px-2.5" onClick={() => { if (!bookBusy) setBookWin(null); }}>
+            <div className="absolute inset-0 backdrop-blur-sm" style={{ background: 'rgba(50,55,40,0.4)' }} />
+            <div className="relative w-full flex flex-col overflow-hidden" style={{ maxWidth: 380, maxHeight: '80vh', background: 'var(--card-bg)', borderRadius: 22, boxShadow: '0 20px 50px var(--card-shadow2)' }} onClick={(e) => e.stopPropagation()}>
+              <div className="flex-none flex items-center justify-between" style={{ padding: '20px 22px 14px' }}>
+                <span className="serc" style={{ fontSize: 16, fontWeight: 600, color: 'var(--ink-deep)' }}>收为章节</span>
+                <button onClick={() => { if (!bookBusy) setBookWin(null); }} className="serc leading-none cursor-pointer hover:opacity-70" style={{ fontSize: 13, color: 'var(--ink2)', background: 'none', border: 'none' }}>关闭</button>
+              </div>
+              <div style={{ margin: '0 22px', borderTop: '1px dashed var(--dash-line)' }} />
+              <div className="flex-1 overflow-y-auto" style={{ padding: '18px 22px 24px' }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink2)', letterSpacing: 1.5, marginBottom: 8 }}>转写风格</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {([['novel', '纯小说叙述'], ['dialogue', '对话为主带叙述']] as const).map(([k, label]) => (
+                    <button
+                      key={k}
+                      onClick={() => setBookStyle(k)}
+                      style={{
+                        textAlign: 'left', fontSize: 13, padding: '10px 14px', borderRadius: 12, cursor: 'pointer',
+                        background: bookStyle === k ? 'var(--scale-2)' : 'var(--card-bg)',
+                        color: bookStyle === k ? 'var(--card-bg)' : 'var(--ink-body)',
+                        border: bookStyle === k ? '1px solid transparent' : '1px solid var(--line-soft)',
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {bookProgress[bookWin] && (
+                  <div style={{ marginTop: 14 }}>
+                    {(bookProgress[bookWin].done > 0 || (bookProgress[bookWin].already ?? 0) > 0 || bookProgress[bookWin].remaining > 0) && (
+                      <div style={{ fontSize: 12.5, color: 'var(--ink2)' }}>
+                        已生成 {bookProgress[bookWin].done} 章{bookProgress[bookWin].total !== undefined ? ` / 共 ${bookProgress[bookWin].total} 章` : ''}
+                        {bookProgress[bookWin].remaining > 0 ? `,还有 ${bookProgress[bookWin].remaining} 章待续` : ''}
+                      </div>
+                    )}
+                    {bookProgress[bookWin].error && (
+                      <div style={{ fontSize: 12.5, color: '#c2693f', marginTop: 6 }}>{bookProgress[bookWin].error}</div>
+                    )}
+                    {bookProgress[bookWin].remaining === 0 && (bookProgress[bookWin].done > 0 || (bookProgress[bookWin].already ?? 0) > 0) && (
+                      <div style={{ fontSize: 12.5, color: 'var(--accent)', marginTop: 6 }}>
+                        {bookProgress[bookWin].done > 0
+                          ? `已生成 ${bookProgress[bookWin].done} 章,去读书角看`
+                          : `这扇窗之前已收过 ${bookProgress[bookWin].already} 章,去读书角看`}
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 8, marginTop: 18 }}>
+                  <button
+                    className="serc"
+                    onClick={() => runBook(bookWin)}
+                    disabled={bookBusy}
+                    style={{ ...btnPrimaryStyle, flex: 1, textAlign: 'center', opacity: bookBusy ? 0.6 : 1 }}
+                  >
+                    {bookBusy ? '生成中…' : (bookProgress[bookWin] && bookProgress[bookWin].remaining > 0 ? `继续生成(${bookProgress[bookWin].remaining})` : '开始生成')}
+                  </button>
+                </div>
               </div>
             </div>
           </div>

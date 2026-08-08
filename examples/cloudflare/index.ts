@@ -22,11 +22,13 @@ import {
   deskWindowCreate, deskWindowList, deskWindowGet, deskWindowUpdate, deskWindowDelete,
   deskFloorEdit, deskWindowTruncate, deskFloorVariant,
 } from '../../src/tools/deskWindows';
+import { deskBookSplit, deskBookAuto } from '../../src/tools/deskBook';
 import { studyList, studyGet, studyCreate, studyUpdate, studyDelete, studySearch, studyBackfill } from '../../src/tools/study';
 import { StudyService } from '../../src/core/studyService.ts';
 import { D1StudyStorage } from './adapters/d1StudyStorage.ts';
 import {
-  chaptersList, chapterGet, chapterCreate, chapterUpdate, chapterDelete, chapterPublish, chapterUnpublish,
+  chaptersList, chapterGet, chapterCreate, chapterUpdate, chapterDelete, chapterRestore, chapterDeletePermanent,
+  chapterPublish, chapterUnpublish,
   commentsList, commentPost, commentDelete,
 } from '../../src/tools/reading';
 import { deskDryrun } from '../../src/chat/deskAssemble';
@@ -321,6 +323,14 @@ async function handleDeskAdmin(request: Request, env: Env, url: URL, ctx: Execut
     }
     if (action === 'unpublish' && request.method === 'POST') {
       const r = await chapterUnpublish(env as any, id);
+      return json(request, env, r, r.success ? 200 : 404);
+    }
+    if (action === 'restore' && request.method === 'POST') {
+      const r = await chapterRestore(env as any, id);
+      return json(request, env, r, r.success ? 200 : 404);
+    }
+    if (action === 'delete-permanent' && request.method === 'POST') {
+      const r = await chapterDeletePermanent(env as any, id);
       return json(request, env, r, r.success ? 200 : 404);
     }
     if (action) return json(request, env, { success: false, error: 'not_found' }, 404);
@@ -635,6 +645,41 @@ async function handleDeskAdmin(request: Request, env: Env, url: URL, ctx: Execut
         const r: any = await maybeFoldDeskTimeline(env as any, id, undefined, { force: true, keep });
         if (r && r.skip === 'window_gone') return json(request, env, { success: false, error: 'Desk window not found.' }, 404);
         return json(request, env, r, r.success ? 200 : 500);
+      }
+      return json(request, env, { success: false, error: 'not_found' }, 404);
+    }
+    // Automatic book: deterministic chapter split + model transcription into the reading corner.
+    // Two endpoints share the same tiny body shape ({ style?, max_chapters?, budget_chars? }).
+    // /book/split is the optional dry-run (no model calls); the frontend main entry is /book.
+    if (rest.endsWith('/book/split')) {
+      const id = rest.slice(0, -'/book/split'.length);
+      if (request.method === 'POST' && id) {
+        const read = await deskReadJsonLimited(request, { maxBytes: DESK_TINY_BODY_MAX, emptyBody: 'as-empty-object' });
+        if ('resp' in read) return read.resp;
+        const body: any = read.body;
+        if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+          return json(request, env, { success: false, error: 'request body must be a JSON object' }, 400);
+        }
+        const r = await deskBookSplit(env as any, id, { budgetChars: body.budget_chars });
+        return json(request, env, r, r.success ? 200 : (r.server === true ? 500 : 400));
+      }
+      return json(request, env, { success: false, error: 'not_found' }, 404);
+    }
+    if (rest.endsWith('/book')) {
+      const id = rest.slice(0, -'/book'.length);
+      if (request.method === 'POST' && id) {
+        const read = await deskReadJsonLimited(request, { maxBytes: DESK_TINY_BODY_MAX, emptyBody: 'as-empty-object' });
+        if ('resp' in read) return read.resp;
+        const body: any = read.body;
+        if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+          return json(request, env, { success: false, error: 'request body must be a JSON object' }, 400);
+        }
+        const r = await deskBookAuto(env as any, id, {
+          style: body.style,
+          max_chapters: body.max_chapters,
+          budgetChars: body.budget_chars,
+        });
+        return json(request, env, r, r.success ? 200 : (r.server === true ? 500 : 400));
       }
       return json(request, env, { success: false, error: 'not_found' }, 404);
     }

@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 chcp 65001 >nul
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
@@ -84,19 +84,34 @@ if not exist frontend\.env.local (
 
 REM ========== 5/5 启动服务 ==========
 echo [5/5] 启动服务...
-echo   后端 Worker: http://localhost:8787
-echo   前端界面:   http://localhost:3000
+
+REM 局域网地址(自动探测,和 wrangler/next 监听 0.0.0.0 配套,手机可访问)
+for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr /i "IPv4"') do set "LANIP=%%a"
+set "LANIP=%LANIP: =%"
+if "%LANIP%"=="" set "LANIP=localhost"
+
+REM 服务已在跑(3001 有监听)就直接开浏览器,不重复启动
+netstat -ano | findstr ":3001" | findstr "LISTENING" >nul 2>&1
+if not errorlevel 1 (
+    echo   服务已在运行,直接打开浏览器...
+    start "" "http://%LANIP%:3001"
+    goto :end
+)
+
+echo   后端 Worker: http://%LANIP%:8799
+echo   前端界面:   http://%LANIP%:3001  (手机可访问 http://%LANIP%:3001)
 echo.
 
-start "tavern-home worker" cmd /k "cd /d %~dp0 && npm run dev"
-start "tavern-home frontend" cmd /k "cd /d %~dp0frontend && npm run dev"
+start "tavern-home worker" cmd /k "cd /d %~dp0 && npx wrangler dev --port 8799 --ip 0.0.0.0"
+start "tavern-home frontend" cmd /k "cd /d %~dp0frontend && .\node_modules\.bin\next dev -p 3001 -H 0.0.0.0"
 
-timeout /t 8 /nobreak >nul
-start http://localhost:3000
+timeout /t 10 /nobreak >nul
+start "" "http://%LANIP%:3001"
 
 echo.
 echo 启动完成！两个服务窗口请不要关闭。
-echo 前端 http://localhost:3000  后端 http://localhost:8787
+echo 前端 http://%LANIP%:3001  后端 http://%LANIP%:8799
+echo 手机在同一 WiFi 下访问 http://%LANIP%:3001
 goto :end
 
 :fail

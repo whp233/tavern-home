@@ -26,7 +26,7 @@ migrations_dir = "examples/cloudflare/schema/migrations"
 # binding = "AI"
 
 [vars]
-ALLOWED_ORIGINS = "http://localhost:8787"
+ALLOWED_ORIGINS = "http://localhost:8787,http://localhost:3001,http://192.168.101.8:3001"
 COMPANION_COMMENT_WRITE = "false"
 
 # ANTHROPIC_API_KEY is a secret, not a var — set it with `wrangler secret put ANTHROPIC_API_KEY`.
