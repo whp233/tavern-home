@@ -6,8 +6,9 @@
 一间搬进你家的写作书房——预设、世界书、正则、角色卡直接导入就能写，推完的剧情存成连载，配一套完整记忆系统，长剧情到第 999 楼还记得第 1 楼。
 
 **本分支的改进**：一键启动（`run.bat`）、更顺手的本地体验、面向新用户的快速上手文档。
-
+**修复了原仓库的bug并优化了体验**
 ---
+##特色功能##
 
 ## 🚀 快速开始（Windows）
 
@@ -18,7 +19,7 @@
 1. 安装依赖（根目录 + 前端，首次运行会等几分钟）
 2. 生成 `.dev.vars` 配置模板（首次），填好 `ANTHROPIC_API_KEY` 后重新运行一次
 3. 初始化本地数据库
-4. 启动后端（`http://localhost:8787`）+ 前端（`http://localhost:3000`）
+4. 启动后端（`http://localhost:8787`）+ 前端（`http://localhost:3000`）(若端口被占用了可以修改）
 5. 自动打开浏览器
 
 > 之后每次双击 `run.bat` 即可一键拉起，两个服务窗口别关。
@@ -45,7 +46,7 @@ AUTH_TOKEN=任意强口令（前端 URL 用的路径 token）
 OWNER_TOKEN=另一个强口令（管理/MCP 用）
 
 # 模型供应商（打字桌顶栏「商」按钮可切换；至少配一种）
-# opencode 供应商 = 任意 OpenAI 兼容渠道（DeepSeek / 硅基流动 / 自建网关都行）：
+# 推荐opencode 供应商或者任意 OpenAI 兼容渠道（DeepSeek / 硅基流动 / 自建网关都行）：
 OPENAI_API_KEY=你的key
 OPENAI_BASE_URL=https://api.deepseek.com/v1   # 可选：OpenAI 兼容网关 base
 OPENAI_MODEL=deepseek-v4-flash                     # 可选：wire 模型名，不填走供应商缺省
