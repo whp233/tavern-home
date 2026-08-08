@@ -11,6 +11,8 @@
 
 ## 🚀 快速开始（Windows）
 
+> **必备依赖**：只要 **Node.js ≥ 18.18**（推荐 20/22 LTS；本仓在 Node 24 上开发验证）+ npm ≥ 10。wrangler/workerd 与前端构建产物都由 npm 依赖自带，不需要额外装 Python/Go/Rust 之类运行时。
+
 双击根目录的 **`run.bat`**，自动完成：
 
 1. 安装依赖（根目录 + 前端，首次运行会等几分钟）
@@ -36,13 +38,26 @@ cd frontend && npm run dev   # 前端 → http://localhost:3000
 
 ### 模型配置（必须）
 
-在根目录 `.dev.vars` 里配置模型供应商：
+在根目录 `.dev.vars` 里配置鉴权 token + 至少一个模型供应商。`.dev.vars` 不入库，首次由 `run.bat` 生成模板，把下面的键填好再重新运行一次即可：
 
 ```ini
-ANTHROPIC_API_KEY=你的key
 AUTH_TOKEN=任意强口令（前端 URL 用的路径 token）
 OWNER_TOKEN=另一个强口令（管理/MCP 用）
+
+# 模型供应商（打字桌顶栏「商」按钮可切换；至少配一种）
+# opencode 供应商 = 任意 OpenAI 兼容渠道（DeepSeek / 硅基流动 / 自建网关都行）：
+OPENAI_API_KEY=你的key
+OPENAI_BASE_URL=https://api.deepseek.com/v1   # 可选：OpenAI 兼容网关 base
+OPENAI_MODEL=deepseek-chat                     # 可选：wire 模型名，不填走供应商缺省
+
+# 其它供应商按需配（<前缀>_API_KEY / _BASE_URL / _MODEL 三件套）：
+# DEEPSEEK_API_KEY=…        # DeepSeek 官方
+# SILICONFLOW_API_KEY=…     # 硅基流动
+# ANTHROPIC_API_KEY=…       # Anthropic 官方
+# ANTHROPIC_BASE_URL=…      # Anthropic 兼容网关（完整 Messages 端点 URL）
 ```
+
+`ANTHROPIC_BASE_URL` 配了走 Anthropic 系自建网关；`OPENAI_*`/`DEEPSEEK_*`/`SILICONFLOW_*` 走官方或任意 OpenAI 兼容网关——三条生成链（打字桌聊天/时光带折叠/状态板重算）都认这套渠道。
 
 ---
 
