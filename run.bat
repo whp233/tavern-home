@@ -1,103 +1,102 @@
-﻿@echo off
-chcp 65001 >nul
+@echo off
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
 REM ============================================
-REM   tavern-home · 酒馆书房 一键启动
+REM   tavern-home one-click launcher
 REM ============================================
-REM 已知修复记录：
-REM  1) AUTH_TOKEN 为空：若不开延迟扩展，if(...) 块内整块解析时 %AUTH_TOKEN% 已被展开，
-REM     导致 .dev.vars 写入空 token。现在块内一律用 !AUTH_TOKEN!。
-REM  2) 本机系统 HTTP_PROXY/HTTPS_PROXY 指向坏代理（127.0.0.1:10809），npm install 会挂；
-REM     npm registry 又指向 npmmirror（对新包 404）。npm install 前清代理 + 指定官方 registry。
-REM  3) wrangler.toml 的 [ai] 绑定已注释，本地 dev 不再需要 CLOUDFLARE_API_TOKEN。
+REM Known fixes in this repo:
+REM  1) AUTH_TOKEN empty: inside if(...) blocks %AUTH_TOKEN% expands too early,
+REM     so use !AUTH_TOKEN! (delayed expansion) inside blocks.
+REM  2) Local HTTP_PROXY/HTTPS_PROXY point to a broken proxy (127.0.0.1:10809)
+REM     which hangs npm install; npm registry is npmmirror (404 for new pkgs).
+REM     So: clear proxy + use official registry before npm install.
+REM  3) [ai] binding in wrangler.toml is commented out, so local dev does not
+REM     need CLOUDFLARE_API_TOKEN.
 echo.
 echo ============================================
-echo   tavern-home · 酒馆书房 一键启动
+echo   tavern-home one-click launcher
 echo ============================================
 echo.
 
-REM ========== 1/5 检查依赖 ==========
-REM 清掉坏代理（子窗口会继承此清空后的环境）
+REM ========== 1/5 check dependencies ==========
+REM child windows inherit the cleared proxy env
 set HTTP_PROXY=
 set HTTPS_PROXY=
 
 if not exist node_modules (
-    echo [1/5] 安装根目录依赖（首次运行，可能需要几分钟）...
+    echo [1/5] Installing root dependencies, first run, may take a few minutes...
     call npm install --registry=https://registry.npmjs.org
     if errorlevel 1 goto :fail
 ) else (
-    echo [1/5] 根目录依赖已就绪
+    echo [1/5] Root dependencies ready
 )
 
 if not exist frontend\node_modules (
-    echo [1/5] 安装前端依赖...
+    echo [1/5] Installing frontend dependencies...
     pushd frontend
     call npm install --registry=https://registry.npmjs.org
     if errorlevel 1 ( popd & goto :fail )
     popd
 ) else (
-    echo [1/5] 前端依赖已就绪
+    echo [1/5] Frontend dependencies ready
 )
 
-REM ========== 2/5 生成 .dev.vars（本地 secrets） ==========
+REM ========== 2/5 generate .dev.vars (local secrets) ==========
 if not exist .dev.vars (
-    echo [2/5] 首次运行：生成 .dev.vars 配置模板...
+    echo [2/5] First run: generating .dev.vars template...
     for /f "delims=" %%a in ('powershell -NoProfile -Command "[guid]::NewGuid().ToString('N')"') do set "AUTH_TOKEN=%%a"
-    (
-        echo ANTHROPIC_API_KEY=在此填入你的 Anthropic API Key
-        echo AUTH_TOKEN=!AUTH_TOKEN!
-        echo OWNER_TOKEN=在此填入一个强口令
-        echo COMPANION_TOKEN=
-    ) > .dev.vars
-    echo   已生成 .dev.vars，AUTH_TOKEN 已自动填好。
-    echo   请打开 .dev.vars 填入 ANTHROPIC_API_KEY 和 OWNER_TOKEN 后重新运行本脚本。
-    echo   提示：本地聊天需要 ANTHROPIC_API_KEY，否则打字桌会报「未配置」。
+    echo ANTHROPIC_API_KEY=put-your-Anthropic-API-Key-here> .dev.vars
+    echo AUTH_TOKEN=!AUTH_TOKEN!>> .dev.vars
+    echo OWNER_TOKEN=put-a-strong-password-here>> .dev.vars
+    echo COMPANION_TOKEN=>> .dev.vars
+    echo   Generated .dev.vars, AUTH_TOKEN filled automatically.
+    echo   Edit .dev.vars to fill ANTHROPIC_API_KEY and OWNER_TOKEN, then re-run.
+    echo   Note: local chat needs ANTHROPIC_API_KEY or an OPENAI_* vendor, otherwise
+    echo   the writing desk reports not configured.
 ) else (
-    echo [2/5] .dev.vars 已存在，跳过
+    echo [2/5] .dev.vars already exists, skipping
 )
 
-REM ========== 3/5 初始化本地数据库（仅首次） ==========
+REM ========== 3/5 initialize local database (first run only) ==========
 if not exist .local-db-initialized (
-    echo [3/5] 初始化本地数据库...
+    echo [3/5] Initializing local database...
     call npm run db:init:local
     if errorlevel 1 goto :fail
     type nul > .local-db-initialized
 ) else (
-    echo [3/5] 本地数据库已初始化，跳过
+    echo [3/5] Local database already initialized, skipping
 )
 
-REM ========== 4/5 生成 frontend/.env.local（指向本地 worker） ==========
+REM ========== 4/5 generate frontend/.env.local (points to local worker) ==========
 if not exist frontend\.env.local (
-    echo [4/5] 生成 frontend/.env.local...
+    echo [4/5] Generating frontend/.env.local...
     for /f "tokens=2 delims==" %%a in ('findstr /b "AUTH_TOKEN=" .dev.vars') do set "AUTH_TOKEN=%%a"
-    (
-        echo NEXT_PUBLIC_WORKER_URL=http://localhost:8787
-        echo NEXT_PUBLIC_AUTH_TOKEN=!AUTH_TOKEN!
-    ) > frontend\.env.local
-    echo   已生成 frontend/.env.local，AUTH_TOKEN 与 .dev.vars 保持一致。
-    echo   注意：AUTH_TOKEN 在构建时内联进前端产物，改了之后要重新构建才生效。
+    echo NEXT_PUBLIC_WORKER_URL=http://localhost:8799> frontend\.env.local
+    echo NEXT_PUBLIC_AUTH_TOKEN=!AUTH_TOKEN!>> frontend\.env.local
+    echo   Generated frontend/.env.local, AUTH_TOKEN matches .dev.vars.
+    echo   Note: AUTH_TOKEN is inlined into the frontend build at build time;
+    echo   re-build after changing it.
 ) else (
-    echo [4/5] frontend/.env.local 已存在，跳过
+    echo [4/5] frontend/.env.local already exists, skipping
 )
 
-REM ========== 5/5 启动服务 ==========
-echo [5/5] 启动服务...
+REM ========== 5/5 start services ==========
+echo [5/5] Starting services...
 
-REM 本机访问固定用 localhost(局域网 IP 被防火墙挡,手机暂不可用)
+REM local access uses localhost (LAN IP is blocked by firewall, phone not usable)
 set "LANIP=localhost"
 
-REM 服务已在跑(3001 有监听)就直接开浏览器,不重复启动
+REM if service already running (3001 listening), just open browser, don't restart
 netstat -ano | findstr ":3001" | findstr "LISTENING" >nul 2>&1
 if not errorlevel 1 (
-    echo   服务已在运行,直接打开浏览器...
+    echo   Service already running, opening browser...
     start "" "http://%LANIP%:3001"
     goto :end
 )
 
-echo   后端 Worker: http://%LANIP%:8799
-echo   前端界面:   http://%LANIP%:3001
+echo   Backend worker: http://%LANIP%:8799
+echo   Frontend UI:   http://%LANIP%:3001
 echo.
 
 start "tavern-home worker" cmd /k "cd /d %~dp0 && npx wrangler dev --port 8799 --ip 0.0.0.0"
@@ -107,14 +106,14 @@ timeout /t 10 /nobreak >nul
 start "" "http://%LANIP%:3001"
 
 echo.
-echo 启动完成！两个服务窗口请不要关闭。
-echo 前端 http://%LANIP%:3001  后端 http://%LANIP%:8799
+echo Done! Keep the two service windows open.
+echo Frontend http://%LANIP%:3001   Backend http://%LANIP%:8799
 goto :end
 
 :fail
 echo.
-echo [错误] 上一步执行失败，请查看上方报错信息。
-echo 常见原因：网络问题导致依赖安装失败、.dev.vars 未填 key。
+echo [ERROR] A previous step failed, check the messages above.
+echo Common causes: network issue during dependency install, or .dev.vars missing keys.
 goto :end
 
 :end
