@@ -37,12 +37,12 @@ type Recipe = {
 // 世界书浮窗跟书架表单现在共用同一份"酒馆高级字段"形状,不留第二份声明。
 const STANDARD_SLOT_HINTS: Record<string, string> = {
   worldInfoBefore: '装入命中的前置世界书',
-  personaDescription: '装入当前 Persona 描述',
-  charDescription: '装入在场角色 Description；旧卡回退到完整正文',
-  charPersonality: '装入在场角色 Personality',
-  scenario: '装入在场角色 Scenario',
+  personaDescription: '装入当前人设描述',
+  charDescription: '装入在场角色描述；旧卡回退到完整正文',
+  charPersonality: '装入在场角色性格',
+  scenario: '装入在场角色场景',
   worldInfoAfter: '装入命中的后置世界书',
-  chatExamples: '装入在场角色 Example Messages',
+  chatExamples: '装入在场角色示例对话',
   chatHistory: '装入核心记忆、召回章节、近期章、时光带与窗口楼层',
 };
 type LoreRow = {

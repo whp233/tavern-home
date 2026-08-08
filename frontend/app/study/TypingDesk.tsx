@@ -294,9 +294,9 @@ function FloorReportView({ report }: { report: FloorReport | null | undefined })
   const layers = report.layers && typeof report.layers === 'object' ? report.layers : {};
   const standardSlots = report.standardSlots && typeof report.standardSlots === 'object' ? report.standardSlots : {};
   const slotLabels: Record<string, string> = {
-    worldInfoBefore: 'World Info (before)', charDescription: 'Char Description',
-    charPersonality: 'Char Personality', scenario: 'Scenario', worldInfoAfter: 'World Info (after)',
-    chatExamples: 'Chat Examples', chatHistory: 'Chat History', personaDescription: 'Persona',
+    worldInfoBefore: '前置世界书', charDescription: '角色描述',
+    charPersonality: '角色性格', scenario: '场景', worldInfoAfter: '后置世界书',
+    chatExamples: '示例对话', chatHistory: '聊天历史', personaDescription: '人设',
   };
   return (
     <div className="mt-1.5 max-w-[85%] max-[760px]:max-w-[92%] border border-dashed border-dash-line rounded-xl bg-card/80 px-4 py-3 font-mono text-[11px] leading-relaxed text-ink-body break-all whitespace-pre-wrap">
