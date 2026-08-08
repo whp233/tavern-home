@@ -35,6 +35,7 @@ CREATE TABLE oc_chapters (
   summary TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','published')),
   published_at TEXT,
+  deleted_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -98,3 +99,11 @@ CREATE INDEX desk_blocks_preset ON desk_blocks(preset_id);
 CREATE INDEX desk_recipes_project ON desk_recipes(project);
 CREATE INDEX desk_windows_project ON desk_windows(project);
 CREATE INDEX desk_floors_window_created ON desk_floors(window_id, created_at);
+CREATE TABLE desk_chapter_floors (
+  chapter_id TEXT NOT NULL REFERENCES oc_chapters(id) ON DELETE CASCADE,
+  window_id  TEXT NOT NULL,
+  floor_id   TEXT NOT NULL,
+  seq        INTEGER NOT NULL,
+  PRIMARY KEY (chapter_id, floor_id)
+);
+CREATE INDEX desk_chapter_floors_window ON desk_chapter_floors(window_id);
