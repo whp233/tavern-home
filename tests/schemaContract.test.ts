@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -17,14 +17,22 @@ function runWrangler(args: string[], persistTo: string, configHome: string) {
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
 }
 
-test('schema init and first migration remain identical and install on empty D1 databases', { timeout: 60_000 }, async () => {
+const norm = (s: string) => s.replaceAll('\r\n', '\n');
+
+test('schema init equals the full migration chain and installs on empty D1 databases', { timeout: 60_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'tavern-study-schema-'));
   try {
-    const [init, migration] = await Promise.all([
-      readFile('examples/cloudflare/schema/init.sql', 'utf8'),
-      readFile('examples/cloudflare/schema/migrations/0001_initial.sql', 'utf8'),
-    ]);
-    assert.equal(init.replaceAll('\r\n', '\n'), migration.replaceAll('\r\n', '\n'));
+    const migrationsDir = join('examples', 'cloudflare', 'schema', 'migrations');
+    const chain = (
+      await Promise.all(
+        (await readdir(migrationsDir))
+          .filter((f) => f.endsWith('.sql'))
+          .sort()
+          .map((f) => readFile(join(migrationsDir, f), 'utf8')),
+      )
+    ).join('');
+    const init = await readFile('examples/cloudflare/schema/init.sql', 'utf8');
+    assert.equal(norm(init), norm(chain));
 
     runWrangler(['d1', 'execute', 'OC_DB', '--file', 'examples/cloudflare/schema/init.sql'], join(root, 'init'), join(root, 'config-init'));
     runWrangler(['d1', 'migrations', 'apply', 'OC_DB'], join(root, 'migration'), join(root, 'config-migration'));
