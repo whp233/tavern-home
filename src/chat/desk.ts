@@ -20,7 +20,7 @@ import { loadDeskTimelineState, renderTimelineText, parseDeskTimelineCutoff, may
 import type { Ai, VectorizeIndex } from '../storage/vectorize';
 import { parseStateBoard as parseCoreStateBoard, STATEBOARD_MAX_BYTES as CORE_STATEBOARD_MAX_BYTES } from '../core/stateBoard.ts';
 import type { DeskAssetStorage, DeskStorage, DeskStoryStorage, DeskTurnStorage, SemanticSearchAdapter } from '../core/storage.ts';
-import { makeDeskBackend } from '../adapters/streamModelBackends.ts';
+import { makeDeskBackend, resolveDeskProvider } from '../adapters/streamModelBackends.ts';
 import { validateDeskChannelConfig } from '../core/deskChannelConfig.ts';
 
 interface DeskChatEnv {
@@ -34,6 +34,16 @@ interface DeskChatEnv {
   OPENAI_MODEL?: string;       // 可选:供应商模型名覆盖,如 'deepseek-chat'
   OPENAI_MAX_TOKENS?: number;  // 可选:默认 8000(deepseek-chat 输出上限)
   OPENAI_ALLOW_HTTP_LOCALHOST?: boolean; // 可选:opencode 本地 http://localhost 用
+  // 多供应商(「商」切换):每组 = <PREFIX>_API_KEY / <PREFIX>_BASE_URL / <PREFIX>_MODEL / <PREFIX>_MAX_TOKENS,
+  // 注册表与解析都在 streamModelBackends.ts 的 DESK_PROVIDER_DEFS / resolveDeskProvider。
+  DEEPSEEK_API_KEY?: string;
+  DEEPSEEK_BASE_URL?: string;
+  DEEPSEEK_MODEL?: string;
+  DEEPSEEK_MAX_TOKENS?: number;
+  SILICONFLOW_API_KEY?: string;
+  SILICONFLOW_BASE_URL?: string;
+  SILICONFLOW_MODEL?: string;
+  SILICONFLOW_MAX_TOKENS?: number;
   [k: string]: any;
 }
 
@@ -53,6 +63,7 @@ interface DeskChatParams {
   window_id: string;
   message?: string;
   model?: string;
+  provider?: string; // 多供应商 id(见 streamModelBackends.ts DESK_PROVIDER_DEFS);空/未传=老渠道自动选择
   roll?: boolean;
   continue?: boolean; // 仅识别旧客户端续写请求，收到即400拒绝
 }
@@ -154,12 +165,23 @@ export async function handleDeskChat(
     if (!message) return errJson('message 不能为空');
     if (message.length > MESSAGE_MAX) return errJson(`message 太长了(上限${MESSAGE_MAX}字)`);
   }
-  const channelError = validateDeskChannelConfig(env);
+  // 渠道校验:显式 provider 时验供应商配置(不存在/没配 → 明确报错,不悄悄回落老渠道),老渠道不传
+  // provider 走 validateDeskChannelConfig(ANTHROPIC/OPENAI 任一)。
+  const provider = typeof params.provider === 'string' ? params.provider.trim() : '';
+  const resolvedProvider = provider ? resolveDeskProvider(env, provider) : null;
+  if (provider && !resolvedProvider) return errJson(`模型供应商未配置或不存在: ${provider}`, 500);
+  const channelError = provider ? null : validateDeskChannelConfig(env);
   if (channelError) return errJson(channelError, 500);
 
   const usageSink = makeD1UsageSink(env);
   const { deskStorage, turnStorage, deskAssets, deskStory, semantic } = storage;
-  const model = params.model && MODEL_PROFILES[params.model] ? params.model : DESK_DEFAULT_MODEL;
+  // 模型选择:OpenAI 兼容供应商的 model 是 wire 模型名(deepseek-chat 之类),不在 claude 白名单
+  // MODEL_PROFILES 里,不能过那个闸否则会被夹回 DESK_DEFAULT_MODEL;anthropic/老渠道才走白名单。
+  // OpenAI 渠道实际 wire 模型仍以 env 的 <PREFIX>_MODEL 覆盖优先(openAiParams 的 options.model)。
+  const isOpenAiProvider = !!resolvedProvider && resolvedProvider.protocol === 'openai';
+  const model = isOpenAiProvider
+    ? (typeof params.model === 'string' && params.model ? params.model : DESK_DEFAULT_MODEL)
+    : (params.model && MODEL_PROFILES[params.model] ? params.model : DESK_DEFAULT_MODEL);
 
   // 1) 载入写作窗
   let win: any;
@@ -350,7 +372,7 @@ export async function handleDeskChat(
     const controller = new AbortController();
     const abort = () => controller.abort(); signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) controller.abort();
-    const backend = makeDeskBackend(env);
+    const backend = makeDeskBackend(env, provider || undefined);
     let failed = false;
     const result = await backend.streamChat({ system: systemBlocks, prompt: tail, model, signal: controller.signal, onEvent: async (event) => {
       if (clientGone) { controller.abort(); return; }

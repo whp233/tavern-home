@@ -187,11 +187,104 @@ export class OpenAIStreamBackend implements ModelBackend {
   }
 }
 
-// 打字桌后端工厂:OPENAI 渠道配了(有 key 或配了 baseUrl)就走 OpenAI 兼容,否则回落 Anthropic。
-// 配了 baseUrl 但没 key 时 OpenAI 后端会在调用期回 config 错误,不悄悄回落 Anthropic。
-export function makeDeskBackend(env: DeskBackendEnv): ModelBackend {
-  if (env.OPENAI_API_KEY || env.OPENAI_BASE_URL !== undefined) {
-    return new OpenAIStreamBackend({ apiKey: env.OPENAI_API_KEY ?? '', baseUrl: env.OPENAI_BASE_URL, model: env.OPENAI_MODEL, maxTokens: env.OPENAI_MAX_TOKENS, allowHttpLocalhost: env.OPENAI_ALLOW_HTTP_LOCALHOST });
+// ===== 多供应商 =====
+// 供应商注册表:静态声明各组 env 前缀 + 展示名 + 协议,「商」切换只认 id。老渠道 OPENAI_*/ANTHROPIC_*
+// 各占一个默认供应商 id(opencode / anthropic),向后兼容:provider 不传时行为一字不变。
+// 新增供应商 = 这里加一行 + 在 .dev.vars 里配 <PREFIX>_API_KEY / <PREFIX>_BASE_URL / <PREFIX>_MODEL。
+// 选「按供应商前缀(方案 A)」而不是「编号通用(方案 B)」的理由:OPENAI_* 老配置本身就是前缀形态,
+// 前缀方案让 OPENAI_* 直接升格成 opencode 供应商、零迁移;编号方案还要给每个供应商多配一个 NAME,
+// 且 README/.dev.vars 里"DEEPSEEK_API_KEY"比"PROVIDER_1_API_KEY"自解释得多。编号方案的唯一优势是
+// 免注册表直接枚举,但打字桌供应商集合小且稳定,静态注册表 + 从 env 探活够用。
+export interface DeskProviderDef {
+  id: string;
+  name: string;
+  prefix: string;                 // env 键前缀,如 'DEEPSEEK' → DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL / DEEPSEEK_MODEL
+  protocol: 'openai' | 'anthropic';
+  defaultModels: string[];        // 没配 <PREFIX>_MODEL 时兜底的模型名列表(anthropic 用,展示给前端下拉)
+}
+
+export interface DeskProviderConfig {
+  id: string;
+  name: string;
+  protocol: 'openai' | 'anthropic';
+  apiKey: string;
+  baseUrl?: string;
+  model?: string;
+  maxTokens?: number;
+  allowHttpLocalhost?: boolean;
+}
+
+export interface DeskProviderInfo {
+  id: string;
+  name: string;
+  protocol: 'openai' | 'anthropic';
+  models: string[];
+}
+
+// anthropic 供应商的缺省模型列表镜像前端 DESK_MODELS(claude 白名单,后端 buildModelParams 认这些名字)。
+const ANTHROPIC_DEFAULT_MODELS = [
+  'claude-sonnet-4-5', 'claude-sonnet-4-6', 'claude-opus-4-5', 'claude-opus-4-6',
+  'claude-opus-4-7', 'claude-opus-4-8', 'claude-opus-5',
+];
+
+const DESK_PROVIDER_DEFS: DeskProviderDef[] = [
+  { id: 'opencode', name: 'opencode', prefix: 'OPENAI', protocol: 'openai', defaultModels: ['deepseek-chat'] },
+  { id: 'anthropic', name: 'Anthropic', prefix: 'ANTHROPIC', protocol: 'anthropic', defaultModels: ANTHROPIC_DEFAULT_MODELS },
+  { id: 'deepseek', name: 'DeepSeek', prefix: 'DEEPSEEK', protocol: 'openai', defaultModels: ['deepseek-chat'] },
+  { id: 'siliconflow', name: '硅基流动', prefix: 'SILICONFLOW', protocol: 'openai', defaultModels: ['deepseek-ai/DeepSeek-V3'] },
+];
+
+// "配了"的判据:有 key 或配了 baseUrl(同老渠道 OPENAI 分支的判定口径——配了 baseUrl 但没 key 时不判为
+// 未配置,让后端在调用期回 config 错误,不悄悄回落)。
+function deskProviderConfigured(env: DeskBackendEnv, def: DeskProviderDef): boolean {
+  return Boolean(env[`${def.prefix}_API_KEY`]) || env[`${def.prefix}_BASE_URL`] !== undefined;
+}
+
+// 解析单个供应商的完整配置;返回 null = 没这个供应商或没配。handleDeskChat 的早验与 makeDeskBackend
+// 的分发共用这一个事实源,不许各写一套判据。
+export function resolveDeskProvider(env: DeskBackendEnv, provider: string): DeskProviderConfig | null {
+  const def = DESK_PROVIDER_DEFS.find((d) => d.id === provider);
+  if (!def || !deskProviderConfigured(env, def)) return null;
+  const prefix = def.prefix;
+  return {
+    id: def.id,
+    name: def.name,
+    protocol: def.protocol,
+    apiKey: String(env[`${prefix}_API_KEY`] ?? ''),
+    baseUrl: env[`${prefix}_BASE_URL`],
+    model: env[`${prefix}_MODEL`],
+    maxTokens: env[`${prefix}_MAX_TOKENS`],
+    allowHttpLocalhost: env[`${prefix}_ALLOW_HTTP_LOCALHOST`],
+  };
+}
+
+// 已配置供应商列表 + 各自模型(前端「商」弹层 GET /api/oc/desk/providers 拉的就是这个)。
+// 模型口径:anthropic 走 claude 白名单;OpenAI 兼容渠道优先用 env 的 <PREFIX>_MODEL(wire 模型名),
+// 没配才落注册表缺省。
+export function listProviders(env: DeskBackendEnv): DeskProviderInfo[] {
+  return DESK_PROVIDER_DEFS.filter((def) => deskProviderConfigured(env, def)).map((def) => {
+    const envModel = env[`${def.prefix}_MODEL`];
+    const models = def.protocol === 'anthropic'
+      ? def.defaultModels
+      : (typeof envModel === 'string' && envModel ? [envModel] : def.defaultModels);
+    return { id: def.id, name: def.name, protocol: def.protocol, models };
+  });
+}
+
+// 打字桌后端工厂:provider 未传 = 老行为(OPENAI 渠道配了就走 OpenAI 兼容,否则回落 Anthropic;
+// 配了 baseUrl 但没 key 时 OpenAI 后端会在调用期回 config 错误,不悄悄回落 Anthropic)。
+// provider 传了 = 按供应商 id 从 env 取配置构建;不存在/没配 → 抛 Error 明示,不悄悄回落。
+export function makeDeskBackend(env: DeskBackendEnv, provider?: string): ModelBackend {
+  if (!provider) {
+    if (env.OPENAI_API_KEY || env.OPENAI_BASE_URL !== undefined) {
+      return new OpenAIStreamBackend({ apiKey: env.OPENAI_API_KEY ?? '', baseUrl: env.OPENAI_BASE_URL, model: env.OPENAI_MODEL, maxTokens: env.OPENAI_MAX_TOKENS, allowHttpLocalhost: env.OPENAI_ALLOW_HTTP_LOCALHOST });
+    }
+    return new AnthropicStreamBackend({ apiKey: env.ANTHROPIC_API_KEY ?? '', baseUrl: env.ANTHROPIC_BASE_URL, userId: USER_ID });
   }
-  return new AnthropicStreamBackend({ apiKey: env.ANTHROPIC_API_KEY ?? '', baseUrl: env.ANTHROPIC_BASE_URL, userId: USER_ID });
+  const cfg = resolveDeskProvider(env, provider);
+  if (!cfg) throw new Error(`模型供应商未配置或不存在: ${provider}`);
+  if (cfg.protocol === 'anthropic') {
+    return new AnthropicStreamBackend({ apiKey: cfg.apiKey, baseUrl: cfg.baseUrl, userId: USER_ID });
+  }
+  return new OpenAIStreamBackend({ apiKey: cfg.apiKey, baseUrl: cfg.baseUrl, model: cfg.model, maxTokens: cfg.maxTokens, allowHttpLocalhost: cfg.allowHttpLocalhost });
 }

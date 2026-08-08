@@ -35,6 +35,7 @@ import { deskDryrun } from '../../src/chat/deskAssemble';
 import { maybeFoldDeskTimeline } from '../../src/chat/deskTimeline';
 import { deskBoardRefresh } from '../../src/chat/deskBoardRefresh';
 import { handleDeskChat, type DeskChatStorage } from '../../src/chat/desk';
+import { listProviders } from '../../src/adapters/streamModelBackends';
 
 interface Env extends AuthEnv {
   OC_DB: D1Database;
@@ -54,6 +55,16 @@ interface Env extends AuthEnv {
   OPENAI_MODEL?: string;
   OPENAI_MAX_TOKENS?: number;
   OPENAI_ALLOW_HTTP_LOCALHOST?: string;
+  // Multi-provider desk chat: each group is <PREFIX>_API_KEY / <PREFIX>_BASE_URL / <PREFIX>_MODEL
+  // (registry lives in src/adapters/streamModelBackends.ts; the frontend "商" popover lists these).
+  DEEPSEEK_API_KEY?: string;
+  DEEPSEEK_BASE_URL?: string;
+  DEEPSEEK_MODEL?: string;
+  DEEPSEEK_MAX_TOKENS?: number;
+  SILICONFLOW_API_KEY?: string;
+  SILICONFLOW_BASE_URL?: string;
+  SILICONFLOW_MODEL?: string;
+  SILICONFLOW_MAX_TOKENS?: number;
   ALLOWED_ORIGINS?: string;
   // Path-token gate for the writer's-desk admin surface (/{AUTH_TOKEN}/api/oc/...) — a secret
   // distinct from the Bearer owner/companion tokens above, matching production's own separate
@@ -732,6 +743,10 @@ async function handleDeskAdmin(request: Request, env: Env, url: URL, ctx: Execut
   // Desk chat: SSE generation (normal turn or roll), state-board protocol handling, and the
   // atomic floor/window commit all live in chat/desk.ts; this route only wires the D1 storage
   // and the background waitUntil hooks (usage logging, auto-fold) into it.
+  // Desk providers: the "商" popover fetches the configured supplier groups (id + name + models).
+  if (url.pathname === '/api/oc/desk/providers' && request.method === 'GET') {
+    return json(request, env, { success: true, providers: listProviders(env as any) });
+  }
   if (url.pathname === '/api/oc/desk/chat' && request.method === 'POST') {
     const read = await deskReadJsonLimited(request);
     if ('resp' in read) return read.resp;

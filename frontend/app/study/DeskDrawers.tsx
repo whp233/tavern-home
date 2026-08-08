@@ -2630,9 +2630,14 @@ const DeskDrawerHub = forwardRef<DeskDrawerHandle, {
                   value={windowSettings.model}
                   onChange={(e) => windowSettings.onPickModel(e.target.value)}
                   disabled={windowSettings.sending}
-                  title="模型(后端白名单同款;写进localStorage全桌通用)"
+                  title="模型(跟「商」选的供应商联动;写进localStorage全桌通用)"
                   style={{ ...inputStyle, width: 'auto', flex: 1, minWidth: 160, cursor: windowSettings.sending ? 'default' : 'pointer', opacity: windowSettings.sending ? 0.6 : 1 }}
                 >
+                  {/* 当前选中的模型不在该供应商的模型列表里(比如切供应商后 localStorage 的 model 还没
+                      联动过来)——垫一个占位选项显示当前 id,不让 select 空着找不到匹配值(照配方下拉同款家法)。 */}
+                  {windowSettings.modelOptions.length > 0 && !windowSettings.modelOptions.some((m) => m.id === windowSettings.model) && (
+                    <option value={windowSettings.model}>当前模型</option>
+                  )}
                   {windowSettings.modelOptions.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
                 </select>
               </div>
