@@ -20,7 +20,7 @@ interface UsageSinkEnv {
   OC_DB: D1Database;
 }
 
-const CHANNELS = new Set(['desk', 'desk-timeline', 'desk-board-refresh']);
+const CHANNELS = new Set(['desk', 'desk-timeline', 'desk-board-refresh', 'desk-book']);
 
 export function makeD1UsageSink(env: UsageSinkEnv): UsageSink {
   return {
