@@ -60,6 +60,15 @@ function fmtMD(iso?: string | null): string {
     return `${d.getMonth() + 1}/${d.getDate()}`;
   } catch { return iso; }
 }
+
+// 章号自然序(字符串序会把"第5章"排到"第38章"后面,追更顺序必须按数字):取开头的阿拉伯数字比较,
+// 纯字母/空按字符串序兜底。ReadingCorner 与 ChaptersStudio 各自留一份(本仓惯例)。
+function naturalCompareChapterNo(a?: string | number | null, b?: string | number | null): number {
+  const na = parseInt(String(a ?? '').trim(), 10);
+  const nb = parseInt(String(b ?? '').trim(), 10);
+  if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
+  return String(a ?? '').localeCompare(String(b ?? ''), 'zh');
+}
 function fmtDT(iso?: string | null): string {
   if (!iso) return '';
   try {
@@ -74,7 +83,9 @@ function fmtDT(iso?: string | null): string {
 // 都是受控 prop),好让 URL 恢复和书架侧的"跳门"都能直接指哪打哪——两个文件各自留一份同名类型,
 // 本仓惯例(同 ProjectField 组件独立成文件那条头注释)。
 type ReadingMainTab = 'read' | 'chapters';
-type CView = 'list' | 'read';
+// 阅读三层:projects(项目列表=书架)→list(某本书的章节列表)→read(具体章)。
+// 项目即书(数据只有 project/chapter 两层),先选书再挑章,不再一进门就铺开全部章节。
+type CView = 'projects' | 'list' | 'read';
 
 // ── project 选择用下拉而非自由文本,理由同 page.tsx 同名组件(手打容易打出对不上的新词,
 // 内容分散找不到自己)——下拉选现有+可新建,不砍新建能力,不新增后端接口。两个文件各自
@@ -119,7 +130,7 @@ export default function ReadingCorner({
   chaptersProject: string | null; onChaptersProjectChange: (p: string | null) => void;
   projectOptions: string[];
 }) {
-  const [cview, setCView] = useState<CView>('list');
+  const [cview, setCView] = useState<CView>('projects');
   // 章节工房的编辑器开着没有(它自己报上来的)——开着就锁住上面那个项目选择器,见渲染处注释。
   const [studioEditorOpen, setStudioEditorOpen] = useState(false);
 
@@ -132,8 +143,21 @@ export default function ReadingCorner({
   // 先发后至的旧响应不能覆盖新状态——提交前核对 tok 还新鲜。
   const listSeqRef = useRef(0);
 
+  // 切到「阅读」主 tab 时强制刷新并回书柜:章节工房发布/撤回后,这边不能还念着旧列表
+  // (mainTab 是受控 prop,ReadingCorner 一直挂载,发布只改章节工房,不会触发这里的列表重拉)。
+  // 用 ref 记上一次的 tab,只在"切进阅读"那一刻动作,切走(去章节工房)不动。
+  const prevMainTabRef = useRef<ReadingMainTab>(mainTab);
   useEffect(() => {
-    if (cview !== 'list') return;
+    const prev = prevMainTabRef.current;
+    prevMainTabRef.current = mainTab;
+    if (mainTab === 'read' && prev !== 'read') {
+      setCView('projects');
+      setListNonce((n) => n + 1);
+    }
+  }, [mainTab]);
+
+  useEffect(() => {
+    if (cview !== 'projects' && cview !== 'list') return;
     if (!envOk) { setListError('环境变量没配好'); setListLoading(false); return; }
     setListLoading(true); setListError('');
     const tok = ++listSeqRef.current;
@@ -155,10 +179,8 @@ export default function ReadingCorner({
     })();
   }, [cview, listNonce, base, envOk]);
 
-  // project 子tab——不同项目的连载混排在一起容易看串,按 project 分开浏览。不为它多发请求,
-  // 从已加载的 chapters 里按 project 去重派生。排序:具名项目按名称(zh)排,"未分类"(project 为空/null)
-  // 固定殿后且只在真有这类数据时才出现(不无中生有一个空 tab)。
-  const projectTabs = useMemo(() => {
+  // 项目即书——按 project 去重列出有哪些书(空 project 归「未分类」,殿后)。
+  const bookTabs = useMemo(() => {
     const seen = new Set<string>();
     const order: string[] = [];
     for (const c of chapters) {
@@ -169,15 +191,26 @@ export default function ReadingCorner({
     return order.includes('') ? [...named, ''] : named;
   }, [chapters]);
 
-  // 选中的子tab在数据刷新后(切连载、删完这个项目最后一章…)消失了,回退到第一个子tab(边角)
-  const [projectTab, setProjectTab] = useState<string | null>(null);
+  // 当前读的书(选中的项目)。切到列表加载章节时若该书已无已发布章节(被删光了),回退到第一本。
+  const [readProject, setReadProject] = useState<string | null>(null);
   useEffect(() => {
-    if (projectTabs.length === 0) return;
-    if (projectTab === null || !projectTabs.includes(projectTab)) setProjectTab(projectTabs[0]);
-  }, [projectTabs, projectTab]);
+    if (cview !== 'list') return;
+    if (bookTabs.length === 0) return;
+    if (readProject === null || !bookTabs.includes(readProject)) setReadProject(bookTabs[0]);
+  }, [bookTabs, readProject, cview]);
 
-  // projectTab 还没落定(effect 还没跑完那一刻)先不过滤,免得闪一下空列表
-  const visibleChapters = projectTab === null ? chapters : chapters.filter((c) => (c.project && c.project.trim() ? c.project : '') === projectTab);
+  // 进入某本书:记下书(项目),翻到章节列表。书里没章节时回到书列表。
+  function openBook(project: string) {
+    setReadProject(project);
+    setCView('list');
+    const inBook = chapters.filter((c) => (c.project && c.project.trim() ? c.project : '') === project);
+    if (inBook.length === 0) setCView('projects');
+  }
+
+  // 当前书里的章节(按章号自然序排——追更顺序,同旧 project 子tab 的 visibleChapters 口径)。
+  const visibleChapters = readProject === null ? [] : chapters
+    .filter((c) => (c.project && c.project.trim() ? c.project : '') === readProject)
+    .sort((a, b) => naturalCompareChapterNo(a.chapter_no, b.chapter_no));
 
   // ── 阅读页 ──
   const [readId, setReadId] = useState<string | null>(null);
@@ -366,40 +399,58 @@ export default function ReadingCorner({
 
       {mainTab === 'read' && (
       <>
-      {/* ══ 连载列表(草稿归章节工房管,这里只铺已发布的) ══ */}
-      {cview === 'list' && (
+      {/* ══ 第一步:书(项目)列表——项目即书,先选书再挑章 ══ */}
+      {cview === 'projects' && (
         <>
-          {/* project 子tab——只有一个 project 时(混排不成立)不渲染这一行,省得占地方却没用 */}
-          {projectTabs.length > 1 && (
-            <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
-              {projectTabs.map((p) => {
-                const active = p === projectTab;
+          {listLoading ? (
+            <div className="card" style={{ ...cardStyle, padding: '20px 24px', fontSize: 13, color: 'var(--ink2)' }}>正在翻这一柜…</div>
+          ) : listError ? (
+            <div className="card" style={{ ...cardStyle, padding: '20px 24px', fontSize: 13, color: '#c2693f' }}>翻不开：{listError}</div>
+          ) : bookTabs.length === 0 ? (
+            <div className="card" style={{ ...glassCardStyle, padding: '20px 24px', fontSize: 13, color: 'var(--ink2)' }}>
+              连载还没开张~去「章节工房」写第一章,发布了就摆到这儿来
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {bookTabs.map((p) => {
+                const inBook = chapters.filter((c) => (c.project && c.project.trim() ? c.project : '') === p);
                 return (
-                  <button
+                  <div
                     key={p || '（未分类）'}
-                    className="serc"
-                    onClick={() => setProjectTab(p)}
-                    style={{
-                      fontSize: 12, color: active ? 'var(--card-bg)' : 'var(--ink2)',
-                      background: active ? 'var(--scale-2)' : 'var(--card-bg)',
-                      border: active ? '1px solid transparent' : '1px solid var(--line-soft)',
-                      borderRadius: 20, padding: '5px 13px', cursor: 'pointer', fontFamily: 'inherit',
-                    }}
+                    onClick={() => openBook(p)}
+                    className="card"
+                    style={{ ...cardStyle, padding: '18px 20px', cursor: 'pointer' }}
                   >
-                    {p === '' ? '未分类' : p}
-                  </button>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                      <span className="serc" style={{ fontSize: 16, color: 'var(--ink-deep)' }}>{p === '' ? '未分类' : p}</span>
+                      <span style={{ fontSize: 12, color: 'var(--ink2)', flex: 'none' }}>{inBook.length} 章</span>
+                    </div>
+                    {inBook.length > 0 && inBook[0].preview && (
+                      <div style={{ fontSize: 12.5, color: 'var(--ink-body)', marginTop: 8, ...clamp2 }}>{inBook[0].preview}</div>
+                    )}
+                  </div>
                 );
               })}
             </div>
           )}
+        </>
+      )}
+
+      {/* ══ 第二步:某本书(项目)的章节列表 ══ */}
+      {cview === 'list' && (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
+            <button className="serc" onClick={() => setCView('projects')} style={pillStyle}>← 返回书柜</button>
+            <span className="serc" style={{ fontSize: 14, color: 'var(--ink-deep)' }}>{readProject === '' ? '未分类' : readProject}</span>
+          </div>
 
           {listLoading ? (
             <div className="card" style={{ ...cardStyle, padding: '20px 24px', fontSize: 13, color: 'var(--ink2)' }}>正在翻这一柜…</div>
           ) : listError ? (
             <div className="card" style={{ ...cardStyle, padding: '20px 24px', fontSize: 13, color: '#c2693f' }}>翻不开：{listError}</div>
-          ) : chapters.length === 0 ? (
+          ) : visibleChapters.length === 0 ? (
             <div className="card" style={{ ...glassCardStyle, padding: '20px 24px', fontSize: 13, color: 'var(--ink2)' }}>
-              连载还没开张~去「章节工房」写第一章,发布了就摆到这儿来
+              这本书还没有已发布的章节~去「章节工房」写第一章
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -412,7 +463,6 @@ export default function ReadingCorner({
                 >
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: 11.5, color: 'var(--card-bg)', background: 'var(--scale-2)', borderRadius: 20, padding: '2px 10px' }}>{c.project}</span>
                       {c.chapter_no != null && c.chapter_no !== '' && <span style={{ fontSize: 12, color: 'var(--ink2)' }}>第{c.chapter_no}章</span>}
                       <span className="serc" style={{ fontSize: 15.5, color: 'var(--ink-deep)' }}>{c.title}</span>
                     </div>
@@ -431,7 +481,7 @@ export default function ReadingCorner({
       {cview === 'read' && (
         <div className="card" style={{ ...cardStyle, padding: '24px 28px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18, flexWrap: 'wrap' }}>
-            <button className="serc" onClick={() => setCView('list')} style={pillStyle}>← 返回连载</button>
+            <button className="serc" onClick={() => setCView('list')} style={pillStyle}>← 返回本章节列表</button>
             {/* 写操作统一归章节工房:这颗不再当场开编辑器,而是带着这一章的项目跳过去 */}
             {chapter && <button className="serc" onClick={jumpToStudio} style={pillStyle}>去章节工房改 →</button>}
           </div>
