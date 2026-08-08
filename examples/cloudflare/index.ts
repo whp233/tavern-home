@@ -28,7 +28,7 @@ import { StudyService } from '../../src/core/studyService.ts';
 import { D1StudyStorage } from './adapters/d1StudyStorage.ts';
 import {
   chaptersList, chapterGet, chapterCreate, chapterUpdate, chapterDelete, chapterRestore, chapterDeletePermanent,
-  chapterPublish, chapterUnpublish,
+  chapterPublish, chapterUnpublish, chaptersExport,
   commentsList, commentPost, commentDelete,
 } from '../../src/tools/reading';
 import { deskDryrun } from '../../src/chat/deskAssemble';
@@ -323,6 +323,17 @@ async function handleDeskAdmin(request: Request, env: Env, url: URL, ctx: Execut
     const body = read.body;
     const r = await chapterCreate(env as any, body);
     return json(request, env, r, r.success ? 200 : 400);
+  }
+  if (url.pathname === '/api/oc/chapters/export' && request.method === 'GET') {
+    const project = (url.searchParams.get('project') || '').trim();
+    const r = await chaptersExport(env as any, { project });
+    if (!r.success) return json(request, env, r, r.error === '缺 project' ? 400 : 500);
+    // 裸 Response 也要带 CORS 头(跟下方 deskRecipeExport 同一个下载身位),否则跨域下载会被浏览器拦
+    const headers = new Headers(corsHeaders(request, env));
+    headers.set('Content-Type', 'text/plain; charset=utf-8');
+    headers.set('Content-Disposition', `attachment; filename="${r.filename}"; filename*=UTF-8''${encodeURIComponent(r.filename)}`);
+    headers.set('Cache-Control', 'no-store');
+    return new Response(r.text, { status: 200, headers });
   }
   if (url.pathname.startsWith('/api/oc/chapters/')) {
     const rest = url.pathname.slice('/api/oc/chapters/'.length);

@@ -22,7 +22,7 @@ register(new URL('./resolve-ext.mjs', import.meta.url));
 const reading: any = await import('../src/tools/reading.ts');
 const {
   chapterCreate, chaptersList, chapterGet, chapterUpdate, chapterPublish, chapterUnpublish,
-  chapterDelete, chapterRestore, chapterDeletePermanent,
+  chapterDelete, chapterRestore, chapterDeletePermanent, chaptersExport,
 } = reading;
 
 // 跟 init.sql:29 + 迁移 0002(deleted_at)同形状。OC_VECTORIZE/AI 没接:
@@ -150,6 +150,52 @@ test('chapter soft delete / restore / permanent delete / trashed list', { timeou
     assert.equal((await chapterPublish(env, b.id)).success, true);
     const bAfter = await chapterGet(env, b.id);
     assert.equal(bAfter.status, 'published');
+  } finally {
+    await platform.dispose();
+  }
+});
+
+test('chaptersExport:整书导出(自然序/空号沉底/排除软删/缺project报错)', { timeout: 30_000 }, async () => {
+  const wranglerConfigHome = resolve('.tmp-wrangler-export-test');
+  await mkdir(wranglerConfigHome, { recursive: true });
+  process.env.XDG_CONFIG_HOME = wranglerConfigHome;
+  const { getPlatformProxy } = await import('wrangler');
+  const platform = await getPlatformProxy<{ OC_DB: D1Database }>({ configPath: 'wrangler.test.toml', persist: false });
+  try {
+    const db = platform.env.OC_DB;
+    await db.batch([
+      db.prepare(OC_CHAPTERS_DDL),
+      db.prepare(OC_COMMENTS_DDL),
+    ]);
+    const env = { OC_DB: db } as any;
+
+    // 缺 project/空串/纯空白 → 报错
+    assert.deepEqual(await chaptersExport(env, {}), { success: false, error: '缺 project' });
+    assert.equal((await chaptersExport(env, { project: '' })).success, false);
+    assert.equal((await chaptersExport(env, { project: '   ' })).success, false);
+
+    // 故意打乱插入顺序(2/10/38/7/空号),导出必须按自然序 2/7/10/38、空号沉底
+    await chapterCreate(env, { project: 'P', chapter_no: '10', title: 'T10', content: 'body 10' });
+    await chapterCreate(env, { project: 'P', chapter_no: '2', title: 'T2', content: 'body 2' });
+    await chapterCreate(env, { project: 'P', chapter_no: '38', title: 'T38', content: 'body 38' });
+    await chapterCreate(env, { project: 'P', chapter_no: '7', title: 'T7', content: 'body 7' });
+    await chapterCreate(env, { project: 'P', chapter_no: '', title: 'TNo', content: 'body no' });
+    // 另一项目的不该混进来
+    await chapterCreate(env, { project: 'Q', chapter_no: '1', title: 'Q1', content: 'q body' });
+    // 一条软删的:排除
+    const delRow = await chapterCreate(env, { project: 'P', chapter_no: '1', title: 'T1', content: 'body 1' });
+    await chapterDelete(env, delRow.id);
+
+    const r = await chaptersExport(env, { project: 'P' });
+    assert.equal(r.success, true);
+    assert.equal(r.filename, 'P.txt');
+    assert.equal(r.text, [
+      '第2章 T2\n\nbody 2',
+      '第7章 T7\n\nbody 7',
+      '第10章 T10\n\nbody 10',
+      '第38章 T38\n\nbody 38',
+      'TNo\n\nbody no', // 空章号只用标题当行首
+    ].join('\n\n'));
   } finally {
     await platform.dispose();
   }

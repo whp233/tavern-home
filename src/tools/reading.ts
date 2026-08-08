@@ -612,3 +612,36 @@ export async function bookclub(env: ReadingEnv, input: any): Promise<any> {
       return { success: false, error: '未知动作' };
   }
 }
+
+// ===== chaptersExport:整书导出——把项目全部章拼成一份纯文本全文,给部署者存档/搬运 =====
+// 全文不截断(跟 chapterGet 同口径:导出场景截了等于切稿)。SQL 不排序,自然序在 JS 里排——
+// 照 queryChapters 的 published 视角同款家法:空章节号沉底,同号按 created_at ASC 兜底。
+export async function chaptersExport(env: ReadingEnv, params: { project?: string }): Promise<any> {
+  const project = String(params?.project ?? '').trim();
+  if (!project) return { success: false, error: '缺 project' };
+  try {
+    const result = await env.OC_DB.prepare(
+      `SELECT id, project, chapter_no, title, content, summary, status, created_at, published_at
+       FROM oc_chapters WHERE project = ? AND deleted_at IS NULL`
+    ).bind(project).all<ChapterRow>();
+    const rows = (result.results || []) as ChapterRow[];
+    rows.sort((a: any, b: any) => {
+      const ac = String(a.chapter_no || ''), bc = String(b.chapter_no || '');
+      if (!ac && !bc) return String(a.created_at || '') < String(b.created_at || '') ? -1 : 1;
+      if (!ac) return 1; // 空章节号沉底
+      if (!bc) return -1;
+      const byChapter = naturalCompare(ac, bc);
+      if (byChapter !== 0) return byChapter;
+      return String(a.created_at || '') < String(b.created_at || '') ? -1 : 1;
+    });
+    // 每章一块:标题行(空章号就只用标题,不产"第章"垃圾)→空行→正文;块与块之间再空一行
+    const blocks = rows.map((row: any) => {
+      const no = String(row.chapter_no || '');
+      const heading = no ? `第${no}章 ${row.title || ''}` : String(row.title || '');
+      return `${heading}\n\n${String(row.content || '')}`;
+    });
+    return { success: true, filename: `${project}.txt`, text: blocks.join('\n\n') };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}

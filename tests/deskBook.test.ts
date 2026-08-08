@@ -14,7 +14,7 @@ import { register } from 'node:module';
 register(new URL('./resolve-ext.mjs', import.meta.url));
 const deskBook: any = await import('../src/tools/deskBook.ts');
 const {
-  deskBookSplitFloors, parseEnvelope, groupFullyMapped, DESK_BOOK_BUDGET_DEFAULT,
+  deskBookSplitFloors, parseEnvelope, normalizeChapterTitle, groupFullyMapped, DESK_BOOK_BUDGET_DEFAULT,
   deskBookSplit, deskBookGenerate, deskBookAuto, CHAPTERS_PER_REQUEST,
 } = deskBook;
 
@@ -165,6 +165,24 @@ test('parseEnvelope extracts title/summary/content and rejects missing tags', ()
   const nested = parseEnvelope('<title>t</title><summary>s</summary><content>正文<content>内嵌</content>尾巴</content>');
   assert.ok(nested);
   assert.equal(nested!.content, '正文<content>内嵌');
+});
+
+// ===== 标题编号归一：剥掉模型标题里自带的编号，只留纯标题 =====
+
+test('normalizeChapterTitle strips any leading 第…章 prefix (wrong numbers included)', () => {
+  // 模型编错的号：阿拉伯/中文/占位符/字母，一律剥掉
+  assert.equal(normalizeChapterTitle('第1章 初见', '1'), '初见');
+  assert.equal(normalizeChapterTitle('第29章 水乳交融', '12'), '水乳交融');
+  assert.equal(normalizeChapterTitle('第四章 凡尘修习', '10'), '凡尘修习');
+  assert.equal(normalizeChapterTitle('第十八章 三千年的回望', '11'), '三千年的回望');
+  assert.equal(normalizeChapterTitle('第N章 晨炊初试', '9'), '晨炊初试');
+  assert.equal(normalizeChapterTitle('第x章 购物', '22'), '购物');
+  // 无编号的纯标题原样保留
+  assert.equal(normalizeChapterTitle('初临凡世', '1'), '初临凡世');
+  assert.equal(normalizeChapterTitle('  晨炊初试  ', '9'), '晨炊初试');
+  // 标题只有编号没有正题 → 回退到系统钦定的正确章号
+  assert.equal(normalizeChapterTitle('第29章', '12'), '第12章');
+  assert.equal(normalizeChapterTitle('', '7'), '第7章');
 });
 
 // ===== 幂等判定：groupFullyMapped =====

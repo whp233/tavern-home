@@ -576,6 +576,16 @@ export default function ChaptersStudio({ base, envOk, project, onEditorOpenChang
       return n;
     });
   }
+  // 导出整书:直接放一个带 Content-Disposition 的下载链接,浏览器按附件下载,不走 fetch/JSON 解析
+  function handleExportTxt() {
+    const qs = new URLSearchParams({ project });
+    const a = document.createElement('a');
+    a.href = `${base}/api/oc/chapters/export?${qs.toString()}`;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
   const emptyText = trashView ? '回收站是空的~删除的章节会先进这里,还能恢复'
     : filter === 'published' ? '还没有已发布的章节~发布后才会出现在这里'
     : filter === 'draft' ? '还没有未发布的章节~'
@@ -683,7 +693,19 @@ export default function ChaptersStudio({ base, envOk, project, onEditorOpenChang
             ? '回收站里是软删的章节(正文/评论/检索坐标都还在),恢复后原样回到章节架;彻底删除才真正删掉,删了找不回来。'
             : '章节架按章号排序。「篇章总结」正文是打字桌常驻记忆和读书角阅读页真正显示的内容;检索gist可选,不填就用正文开头当检索坐标。保存后检索坐标自动更新。'}
         </div>
-        {!trashView && <button className="serc" onClick={openCreate} style={btnPrimaryStyle}>+ 新建章节</button>}
+        {!trashView && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <button className="serc" onClick={openCreate} style={btnPrimaryStyle}>+ 新建章节</button>
+            <button
+              className="serc"
+              onClick={handleExportTxt}
+              disabled={batchBusy}
+              style={{ ...pillStyle, opacity: batchBusy ? 0.6 : 1 }}
+            >
+              导出 txt
+            </button>
+          </div>
+        )}
       </div>
 
       {/* 状态筛选 tabs:全部/已发布/未发布本地过滤,回收站单独拉 ?status=trashed */}

@@ -108,6 +108,15 @@ export function parseEnvelope(text: string): { title: string; summary: string; c
   return { title: title[1], summary: summary[1], content: content[1] };
 }
 
+// ===== 标题编号归一：模型爱在标题里带"第N章/第四章/第29章"这类编号，且经常编错——
+//   chapter_no 字段才是系统的真编号（读书角/章节工房都拿它渲染"第N章"徽章），
+//   标题里的编号一律剥掉、只留纯标题，彻底消掉"标题标号对不上"的问题。=====
+export function normalizeChapterTitle(raw: string, chapterNo: string): string {
+  const t = String(raw || '').trim();
+  const stripped = t.replace(/^第[^\s]{0,8}章\s*/, '').trim();
+  return stripped || `第${chapterNo}章`;
+}
+
 // 幂等判定：章组的楼层是否已全部进过 desk_chapter_floors（全进=已生成过，跳过）
 export function groupFullyMapped(group: DeskBookChapterGroup, mapped: Set<string>): boolean {
   return group.floor_ids.every((id) => mapped.has(id));

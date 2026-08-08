@@ -19,13 +19,13 @@ import { extractDeskTimelineAssistantBody, renderTimelineText } from '../chat/de
 import { parseCoreMemory } from '../chat/deskAssemble';
 import { chapterCreate } from './reading';
 import {
-  deskBookSplitFloors, parseEnvelope, groupFullyMapped, DESK_BOOK_BUDGET_DEFAULT,
+  deskBookSplitFloors, parseEnvelope, normalizeChapterTitle, groupFullyMapped, DESK_BOOK_BUDGET_DEFAULT,
   type DeskBookFloor, type DeskBookSplitOpts,
 } from './deskBookSplit';
 
 // 纯内核（deskBookSplit.ts）re-export，REST/测试共用同一份
 export {
-  DESK_BOOK_BUDGET_DEFAULT, deskBookSplitFloors, parseEnvelope, groupFullyMapped,
+  DESK_BOOK_BUDGET_DEFAULT, deskBookSplitFloors, parseEnvelope, normalizeChapterTitle, groupFullyMapped,
   type DeskBookFloor, type DeskBookChapterGroup, type DeskBookSplitOpts,
 } from './deskBookSplit';
 
@@ -78,7 +78,7 @@ const SYSTEM_NOVEL =
   `3-只依据【本章楼层原文】转写，禁止脑补原文没有的剧情、人物、事件、心理活动。\n` +
   `4-正文用中文，自然分段；人名、地名、时间线保持原文一致。\n\n` +
   `输出格式（必须完整输出下面三个标签，不要输出任何其它内容）：\n` +
-  `<title>第N章 标题</title>\n` +
+  `<title>本章标题（纯标题，不要带"第N章"这类章节编号）</title>\n` +
   `<summary>200字左右的本章梗概</summary>\n` +
   `<content>转写正文</content>`;
 
@@ -90,7 +90,7 @@ const SYSTEM_DIALOGUE =
   `3-只依据【本章楼层原文】转写，禁止脑补原文没有的剧情、人物、事件、心理活动。\n` +
   `4-正文用中文，自然分段；人名、地名、时间线保持原文一致。\n\n` +
   `输出格式（必须完整输出下面三个标签，不要输出任何其它内容）：\n` +
-  `<title>第N章 标题</title>\n` +
+  `<title>本章标题（纯标题，不要带"第N章"这类章节编号）</title>\n` +
   `<summary>200字左右的本章梗概</summary>\n` +
   `<content>转写正文</content>`;
 
@@ -251,7 +251,9 @@ export async function deskBookGenerate(env: DeskBookEnv, windowId: string, opts:
       failed.push({ chapter_index: chapterIndex, error: reason });
       continue;
     }
-    const title = parsed.title.trim() || `第${chapterNo}章`;
+    // 标题里的编号归 chapter_no 字段（"第N章"徽章）管，模型标题自带的编号一律剥掉——
+    // 模型常在标题里编错号（第N章/第四章/第29章…），剥掉后徽章展示的就是唯一正确的编号。
+    const title = normalizeChapterTitle(parsed.title, chapterNo);
     const content = parsed.content.trim();
     const summary = parsed.summary.trim();
     if (!content) {
