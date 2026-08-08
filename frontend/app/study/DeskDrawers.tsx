@@ -2083,14 +2083,19 @@ function CharacterCardImportPicker({ project, postImport }: {
   );
 }
 
-// ST JSONL 聊天记录导入(⑥号口):聊天记录 = 每行一个消息对象(无头部行)的 JSONL,导成一个新写作窗
-// + 把消息按序落成楼层。建窗必须挂配方(recipe_id)——新窗要种 SEED_TIMELINE_STATE 且装配按窗口
-// 配方走,所以这里多一个「建到哪个配方」下拉(照 regexPresets 的拉取模式)。收据照角色卡口:
-// 成功横幅 + floor_count + warnings 逐条列出。
-function ChatJsonlImportPicker({ base, envOk, project, postImport }: {
+// ST JSONL 聊天记录导入(⑥号口):聊天记录 = 每行一个消息对象(无头部行)的 JSONL,有两种落法:
+//   ① 新建模式(默认):导成一个新写作窗 + 把消息按序落成楼层。建窗必须挂配方(recipe_id)——新窗
+//      要种 SEED_TIMELINE_STATE 且装配按窗口配方走,所以这里多一个「建到哪个配方」下拉。
+//   ② 合并模式:把文件里"本地窗还没有的"新消息追加进已有窗(本地旧数据较旧、外部文件较新,
+//      快速补齐)。判重靠 role+内容完全一致(方案A),只追加不删,旧楼层原样保留。目标窗从当前
+//      project 的现有窗里选,默认预选当前正在看的窗(currentWindowId,写作屏打开抽屉时由
+//      DeskDrawerHub 传下来;列表屏没有当前窗就默认第一扇)。收据区分新增/跳过的重复。
+function ChatJsonlImportPicker({ base, envOk, project, postImport, currentWindowId }: {
   base: string; envOk: boolean; project: string;
   postImport: (path: string, body: any) => Promise<any>;
+  currentWindowId?: string;
 }) {
+  const [mode, setMode] = useState<'new' | 'merge'>('new');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [receipt, setReceipt] = useState<any>(null);
@@ -2099,6 +2104,11 @@ function ChatJsonlImportPicker({ base, envOk, project, postImport }: {
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [recipesLoading, setRecipesLoading] = useState(true);
   const [recipesError, setRecipesError] = useState('');
+  // 合并模式的目标窗列表(照 deskWindowList 返回形状:id/project/title/floor_count/updated_at)
+  const [windows, setWindows] = useState<{ id: string; project: string; title: string; floor_count: number; updated_at: string }[]>([]);
+  const [windowsLoading, setWindowsLoading] = useState(true);
+  const [windowsError, setWindowsError] = useState('');
+  const [mergeWindowId, setMergeWindowId] = useState('');
 
   useEffect(() => {
     if (!envOk) { setRecipesError('环境变量没配好'); setRecipesLoading(false); return; }
@@ -2123,24 +2133,53 @@ function ChatJsonlImportPicker({ base, envOk, project, postImport }: {
     return () => { cancelled = true; };
   }, [base, envOk]);
 
+  // 合并模式才需要目标窗列表;但配方拉取两个模式都用,这个 effect 跟上面 recipe 那个是并行的。
+  useEffect(() => {
+    if (!envOk) { setWindowsError('环境变量没配好'); setWindowsLoading(false); return; }
+    let cancelled = false;
+    (async () => {
+      setWindowsLoading(true); setWindowsError('');
+      try {
+        const qs = new URLSearchParams({ project });
+        const res = await fetch(`${base}/api/oc/desk/windows?${qs.toString()}`);
+        const d = await res.json().catch(() => null);
+        if (!res.ok || !d || d.success !== true) throw new Error(d?.error || '写作窗列表翻不出来');
+        if (cancelled) return;
+        const list = Array.isArray(d.windows) ? d.windows : [];
+        setWindows(list);
+        // 默认预选当前正在看的窗(currentWindowId),不在列表里就回退第一扇
+        setMergeWindowId((prev) => prev || (currentWindowId && list.some((w: any) => w.id === currentWindowId) ? currentWindowId : list[0]?.id || ''));
+      } catch (e: any) {
+        if (!cancelled) setWindowsError(e.message || '写作窗列表翻不出来');
+      } finally {
+        if (!cancelled) setWindowsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [base, envOk, project, currentWindowId]);
+
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = ''; // 同名文件也能再选一次
     if (file.size > IMPORT_FILE_MAX_BYTES) { setError('文件过大(超过 16MB)'); return; }
-    // 显式快照当时选中的配方/标题——不靠"这个闭包反正只读一次"这种隐式假设(照 regexTarget 快照口径)
+    // 显式快照当时选中的配方/标题/目标窗——不靠"这个闭包反正只读一次"这种隐式假设(照 regexTarget 快照口径)
     const recipeSnapshot = recipeId;
-    if (!recipeSnapshot) { setError('先在上面的下拉里选一个配方(聊天记录要建到哪扇窗)'); return; }
     const titleSnapshot = title.trim();
+    const mergeWindowSnapshot = mergeWindowId;
+    if (mode === 'new' && !recipeSnapshot) { setError('先在上面的下拉里选一个配方(聊天记录要建到哪扇窗)'); return; }
+    if (mode === 'merge' && !mergeWindowSnapshot) { setError('先在上面的下拉里选一扇目标窗(聊天记录要合并到哪扇窗)'); return; }
     setBusy(true); setError(''); setReceipt(null);
     try {
       const text = await file.text();
-      const r = await postImport('/api/oc/desk/import/chat', {
-        project,
-        recipe_id: recipeSnapshot,
-        title: titleSnapshot || file.name.replace(/\.(jsonl|json)$/i, ''),
-        raw: text,
-      });
+      const body: any = { project, raw: text };
+      if (mode === 'merge') {
+        body.window_id = mergeWindowSnapshot;
+      } else {
+        body.recipe_id = recipeSnapshot;
+        body.title = titleSnapshot || file.name.replace(/\.(jsonl|json)$/i, '');
+      }
+      const r = await postImport('/api/oc/desk/import/chat', body);
       setReceipt(r);
     } catch (err: any) {
       setError(err.message || '导入失败');
@@ -2149,29 +2188,80 @@ function ChatJsonlImportPicker({ base, envOk, project, postImport }: {
     }
   }
 
+  // 切换模式时清掉旧收据,别让上一趟的结果还挂在另一模式的界面上
+  function switchMode(next: 'new' | 'merge') {
+    setMode(next);
+    setError('');
+    setReceipt(null);
+  }
+
   return (
     <div style={{ ...cardStyle, padding: '16px 18px', marginBottom: 16 }}>
       <div style={{ fontSize: 14, color: 'var(--ink-deep)', marginBottom: 4 }}>⑥ 聊天记录JSONL</div>
       <div style={{ fontSize: 11.5, color: 'var(--ink2)', marginBottom: 12 }}>
-        {`SillyTavern 聊天记录(JSONL,每行一条消息,无头部行)——导成一个新写作窗,消息按序落成楼层,swipes 候选版本一并带上`}
+        {mode === 'new'
+          ? `SillyTavern 聊天记录(JSONL,每行一条消息,无头部行)——导成一个新写作窗,消息按序落成楼层,swipes 候选版本一并带上`
+          : `合并模式:文件里「本地窗还没有的」新消息会追加进目标窗,本地已有的旧楼层原样保留、重复的自动跳过(判重=谁说的+内容完全一致)`}
       </div>
-      <div style={{ marginBottom: 10 }}>
-        <div style={{ fontSize: 11, color: 'var(--ink2)', marginBottom: 4 }}>建到哪个配方</div>
-        {recipesLoading ? (
-          <div style={{ fontSize: 11.5, color: 'var(--ink2)' }}>正在翻配方…</div>
-        ) : recipesError ? (
-          <div style={{ fontSize: 11.5, color: errColor }}>配方翻不出来：{recipesError}</div>
-        ) : recipes.length === 0 ? (
-          <div style={{ fontSize: 11.5, color: errColor }}>还没有配方——先去「积木/配方」页建一个再导聊天记录</div>
-        ) : (
-          <select value={recipeId} onChange={(e) => setRecipeId(e.target.value)} disabled={busy}
-            style={{ ...inputStyle, cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.6 : 1 }}>
-            {recipes.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-          </select>
-        )}
+      {/* 模式切换:新建窗 / 合并到已有窗 */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        {([['new', '新建窗'], ['merge', '合并到已有窗']] as const).map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => switchMode(k)}
+            disabled={busy}
+            className="serc"
+            style={{
+              fontSize: 12, padding: '6px 14px', borderRadius: 16, cursor: busy ? 'default' : 'pointer',
+              background: mode === k ? 'var(--scale-3)' : 'var(--card-bg)',
+              color: mode === k ? 'var(--card-bg)' : 'var(--ink-body)',
+              border: mode === k ? '1px solid transparent' : '1px solid var(--line-soft)',
+              fontFamily: 'inherit', opacity: busy ? 0.6 : 1,
+            }}
+          >
+            {label}
+          </button>
+        ))}
       </div>
-      <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="新窗标题(不填=文件名)" disabled={busy}
-        style={{ ...inputStyle, marginBottom: 10 }} />
+      {mode === 'new' ? (
+        <>
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 11, color: 'var(--ink2)', marginBottom: 4 }}>建到哪个配方</div>
+            {recipesLoading ? (
+              <div style={{ fontSize: 11.5, color: 'var(--ink2)' }}>正在翻配方…</div>
+            ) : recipesError ? (
+              <div style={{ fontSize: 11.5, color: errColor }}>配方翻不出来：{recipesError}</div>
+            ) : recipes.length === 0 ? (
+              <div style={{ fontSize: 11.5, color: errColor }}>还没有配方——先去「积木/配方」页建一个再导聊天记录</div>
+            ) : (
+              <select value={recipeId} onChange={(e) => setRecipeId(e.target.value)} disabled={busy}
+                style={{ ...inputStyle, cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.6 : 1 }}>
+                {recipes.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+            )}
+          </div>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="新窗标题(不填=文件名)" disabled={busy}
+            style={{ ...inputStyle, marginBottom: 10 }} />
+        </>
+      ) : (
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 11, color: 'var(--ink2)', marginBottom: 4 }}>合并到哪扇窗</div>
+          {windowsLoading ? (
+            <div style={{ fontSize: 11.5, color: 'var(--ink2)' }}>正在翻写作窗…</div>
+          ) : windowsError ? (
+            <div style={{ fontSize: 11.5, color: errColor }}>写作窗列表翻不出来：{windowsError}</div>
+          ) : windows.length === 0 ? (
+            <div style={{ fontSize: 11.5, color: errColor }}>这个项目还没有写作窗——先「新建窗」导一次,或改用新建模式</div>
+          ) : (
+            <select value={mergeWindowId} onChange={(e) => setMergeWindowId(e.target.value)} disabled={busy}
+              style={{ ...inputStyle, cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.6 : 1 }}>
+              {windows.map((w) => (
+                <option key={w.id} value={w.id}>{w.title || '(未命名窗)'}（{w.floor_count} 层）</option>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
       <input type="file" accept=".jsonl,.json,application/json" onChange={onFile} disabled={busy}
         style={{ fontSize: 12, color: 'var(--ink-body)' }} />
       {busy && <div style={{ fontSize: 12, color: 'var(--ink2)', marginTop: 8 }}>导入处理中…</div>}
@@ -2180,7 +2270,9 @@ function ChatJsonlImportPicker({ base, envOk, project, postImport }: {
         <div style={{ marginTop: 10, background: 'var(--scale-0)', borderRadius: 10, padding: '10px 12px' }}>
           <div style={{ fontSize: 13, color: 'var(--accent)', fontWeight: 600, marginBottom: 4 }}>导入成功</div>
           <div style={{ fontSize: 11.5, color: 'var(--accent)', marginBottom: 8 }}>
-            {`共导入 ${receipt.floor_count} 条楼层,新窗已建好——去写作台能看到这扇窗`}
+            {mode === 'merge'
+              ? `合并完成:新增 ${receipt.floor_count} 条楼层,跳过 ${receipt.skipped_dupes ?? 0} 条本地已有重复——目标窗楼层已补齐`
+              : `共导入 ${receipt.floor_count} 条楼层,新窗已建好——去写作台能看到这扇窗`}
           </div>
           {Array.isArray(receipt.warnings) && receipt.warnings.length > 0 && (
             <div style={{ fontSize: 11, color: 'var(--ink2)', marginBottom: 8, lineHeight: 1.7 }}>
@@ -2193,7 +2285,7 @@ function ChatJsonlImportPicker({ base, envOk, project, postImport }: {
   );
 }
 
-function ImportTab({ base, envOk, project, onRegexChanged }: { base: string; envOk: boolean; project: string; onRegexChanged?: () => void }) {
+function ImportTab({ base, envOk, project, onRegexChanged, currentWindowId }: { base: string; envOk: boolean; project: string; onRegexChanged?: () => void; currentWindowId?: string }) {
   const [presetName, setPresetName] = useState('');
 
   // 案2(R3):第④口"挂到哪"要列现有预设包供选——ImportTab之前没拉过这份列表(BlocksTab那边拉的
@@ -2300,7 +2392,7 @@ function ImportTab({ base, envOk, project, onRegexChanged }: { base: string; env
         }}
       />
       <CharacterCardImportPicker project={project} postImport={postImport} />
-      <ChatJsonlImportPicker base={base} envOk={envOk} project={project} postImport={postImport} />
+      <ChatJsonlImportPicker base={base} envOk={envOk} project={project} postImport={postImport} currentWindowId={currentWindowId} />
     </div>
   );
 }
@@ -2363,7 +2455,8 @@ export type DeskDrawerHandle = {
 const DeskDrawerHub = forwardRef<DeskDrawerHandle, {
   base: string; envOk: boolean; project: string; open: boolean; onClose: () => void; onRegexChanged?: () => void;
   windowSettings?: WindowSettings;
-}>(function DeskDrawerHub({ base, envOk, project, open, onClose, onRegexChanged, windowSettings }, drawerHandleRef) {
+  currentWindowId?: string;
+}>(function DeskDrawerHub({ base, envOk, project, open, onClose, onRegexChanged, windowSettings, currentWindowId }, drawerHandleRef) {
   const [tab, setTab] = useState<TabKey>('blocks');
   // 世界书/核心记忆两个标签页已抬进浮窗(LoreWindow.tsx),它们的脏位跟着走——这里只剩积木/配方
   // 一路真草稿(正则是点开关就地生效、导入是选文件即触发,本来就没有"不点保存就不落库"的中间态)。
@@ -2668,7 +2761,7 @@ const DeskDrawerHub = forwardRef<DeskDrawerHandle, {
               串项目事故;F2 的请求令牌是同一挂载周期内的第二道保险,两条一起才算"带式而不只是保险"。*/}
           {tab === 'blocks' && <BlocksTab key={project} base={base} envOk={envOk} project={project} onDirtyChange={setBlocksDirty} onRegexChanged={onRegexChanged} onOverlayOpenChange={setBlocksOverlayOpen} />}
           {tab === 'regex' && <RegexTab base={base} envOk={envOk} onRegexChanged={onRegexChanged} />}
-          {tab === 'import' && <ImportTab base={base} envOk={envOk} project={project} onRegexChanged={onRegexChanged} />}
+          {tab === 'import' && <ImportTab base={base} envOk={envOk} project={project} onRegexChanged={onRegexChanged} currentWindowId={currentWindowId} />}
         </div>
       </div>
     </>

@@ -35,6 +35,33 @@ function truncate(s: string): string {
   return Array.from(s).slice(0, MES_MAX).join('');
 }
 
+// 合并判重键:role + content 完全一致算同一消息(用户拍板方案A)。判重不看 swipes 候选版本。
+// 合并模式只追加不删除——existing 永远原样保留,只决定 incoming 里哪些算"已有"被滤掉。
+// 返回 { floors: 需要新增的楼层(保持 incoming 顺序), skipped: 被判定重复滤掉的条数 }。
+export interface MergeFloorsResult {
+  floors: ParsedChatFloor[];
+  skipped: number;
+}
+
+export function mergeFloors(existing: ParsedChatFloor[], incoming: ParsedChatFloor[]): MergeFloorsResult {
+  const seen = new Set<string>();
+  for (const f of existing) {
+    seen.add(`${f.role}\u0000${f.content}`);
+  }
+  const floors: ParsedChatFloor[] = [];
+  let skipped = 0;
+  for (const f of incoming) {
+    const key = `${f.role}\u0000${f.content}`;
+    if (seen.has(key)) {
+      skipped++;
+      continue;
+    }
+    seen.add(key); // 同一批内也要去重:文件里同内容出现两次只落一条
+    floors.push(f);
+  }
+  return { floors, skipped };
+}
+
 export function parseChatJsonl(raw: string): ParseChatJsonlResult {
   if (typeof raw !== 'string') {
     return { ok: false, error: `聊天记录必须是字符串(JSONL全文),实际收到的是 ${describeType(raw)}` };

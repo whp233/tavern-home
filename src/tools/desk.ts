@@ -21,7 +21,7 @@ import type { Ai, VectorizeIndex } from '../storage/vectorize';
 import { isPatternUnsafe } from '../shared/regexSafety';
 import { embedMemory } from './study';
 import type { CharacterCard } from '../core/characterCard';
-import { parseChatJsonl } from '../core/chatImport';
+import { parseChatJsonl, mergeFloors } from '../core/chatImport';
 import { deskWindowCreate } from './deskWindows';
 
 interface DeskEnv {
@@ -799,11 +799,16 @@ export async function deskImportWorlds(env: DeskEnv, raw: any): Promise<any> {
   return { success: true, project, count: entries.length };
 }
 
-// ===== import/chat(ST JSONL 聊天记录 → 新写作窗的楼层)=====
+// ===== import/chat(ST JSONL 聊天记录 → 新写作窗或已有窗的楼层)=====
 // 聊天记录 JSONL 每行一个消息对象,无头部行。纯解析在 src/core/chatImport.ts(parseChatJsonl,
-// 照 parseCharacterCard 同款家法:纯函数跟落库分开),这里先 parse 再建窗落楼。
-// 建窗必须走 deskWindowCreate:它做了 recipe 存在性校验 + SEED_TIMELINE_STATE 播种(deskWindows.ts
-// 不 import 本文件,无循环依赖),新窗 timeline_state 不能指望 SQL 默认值兜底。
+// 照 parseCharacterCard 同款家法:纯函数跟落库分开),这里先 parse 再落楼。
+// 两种模式:
+//   1. 不传 window_id → 新建窗落楼(原行为):建窗必须走 deskWindowCreate,它做了 recipe 存在性
+//      校验 + SEED_TIMELINE_STATE 播种(deskWindows.ts 不 import 本文件,无循环依赖),新窗
+//      timeline_state 不能指望 SQL 默认值兜底。
+//   2. 传 window_id → 合并模式:把文件里"本地窗没有的"新消息追加进已有窗。判重用 mergeFloors
+//      (role+content 完全一致算重复,方案A),只追加不删除——本地旧消息原样保留。重复滤掉、
+//      新消息按文件里的时间序自然排在旧楼层后面。合并也要校验窗存在且属于当前 project。
 
 // 0 条有效楼层时的报错辅助:从 warnings 里挑"出现次数最多的跳过原因"当代表——
 // warnings 每条形如"第N行: <原因>",剥掉行号前缀按原因分组计数,返回最大的一档。
@@ -835,6 +840,103 @@ export async function deskImportChat(env: DeskEnv, body: any): Promise<any> {
         : `project 字段类型不对,应该是非空字符串,实际收到的是 ${describeType(body.project)}`,
     };
   }
+  // window_id:有=合并到已有窗(新建模式不校验 recipe_id,合并模式反而不用 recipe_id)
+  const mergeWindowId = typeof body.window_id === 'string' && body.window_id.trim() ? body.window_id.trim() : undefined;
+  const raw = body.raw;
+  if (typeof raw !== 'string') {
+    return { success: false, error: `raw 字段类型不对,应该是字符串(JSONL全文),实际收到的是 ${describeType(raw)}` };
+  }
+
+  const parsed = parseChatJsonl(raw);
+  if (!parsed.ok) return { success: false, error: parsed.error };
+  if (parsed.floors.length === 0) {
+    return { success: false, error: `聊天记录里 0 条有效楼层(共跳过 ${parsed.skipped_lines} 行)——${biggestSkipReason(parsed.warnings)}` };
+  }
+
+  // ── 合并模式:把新消息追加进已有窗 ──
+  if (mergeWindowId) {
+    // 1. 校验目标窗存在且属于当前 project
+    let window: any;
+    try {
+      window = await env.OC_DB.prepare(`SELECT id, project FROM desk_windows WHERE id = ?`).bind(mergeWindowId).first();
+    } catch (err: any) {
+      return { success: false, error: err.message, server: true };
+    }
+    if (!window) {
+      return { success: false, error: `合并目标窗不存在: ${mergeWindowId}` };
+    }
+    if (window.project !== project) {
+      return { success: false, error: `目标窗(project=${window.project})不属于当前 project(${project}),不能合并——换个窗或换个项目` };
+    }
+
+    // 2. 拉目标窗现有楼层做判重基准(只取判重键,不整段拉回)
+    let existing: { role: string; content: string }[];
+    try {
+      const rows = await env.OC_DB.prepare(
+        `SELECT role, content FROM desk_floors WHERE window_id = ?`
+      ).bind(mergeWindowId).all();
+      existing = (rows.results || []) as { role: string; content: string }[];
+    } catch (err: any) {
+      return { success: false, error: err.message, server: true };
+    }
+
+    // 3. 去重:existing 转成 ParsedChatFloor 形状喂给 mergeFloors(判重键只要 role+content)
+    const existingFloors = existing.map((r) => ({
+      role: r.role === 'user' ? 'user' as const : 'assistant' as const,
+      content: r.content,
+      variants: [r.content],
+      activeVariant: 0,
+      createdAt: '',
+    }));
+    const merged = mergeFloors(existingFloors, parsed.floors);
+    if (merged.floors.length === 0) {
+      return {
+        success: true,
+        window_id: mergeWindowId,
+        project,
+        floor_count: 0,
+        merged: 0,
+        skipped_dupes: merged.skipped,
+        warnings: [...parsed.warnings, `文件里没有本地窗还没有的新消息(判重跳过 ${merged.skipped} 条),未做任何改动`],
+        skipped_lines: parsed.skipped_lines,
+      };
+    }
+
+    // 4. 批量插入新增楼层(照新建模式的 900/批 安全线)
+    const baseTs = Date.now();
+    const rand = Math.random().toString(36).slice(2, 11);
+    const BATCH_LIMIT = 900;
+    let inserted = 0;
+    for (let start = 0; start < merged.floors.length; start += BATCH_LIMIT) {
+      const chunk = merged.floors.slice(start, start + BATCH_LIMIT);
+      const stmts = chunk.map((f, k) => {
+        const absIdx = start + k;
+        return env.OC_DB.prepare(
+          `INSERT INTO desk_floors (id, window_id, role, content, variants, active_variant, thinking, report, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, NULL, '{}', ?)`
+        ).bind(`fl_${baseTs + absIdx}_${rand}`, mergeWindowId, f.role, f.content, JSON.stringify(f.variants), f.activeVariant, f.createdAt);
+      });
+      try {
+        await env.OC_DB.batch(stmts);
+        inserted += chunk.length;
+      } catch (err: any) {
+        return { success: false, error: err.message, server: true };
+      }
+    }
+
+    return {
+      success: true,
+      window_id: mergeWindowId,
+      project,
+      floor_count: inserted,
+      merged: inserted,
+      skipped_dupes: merged.skipped,
+      warnings: parsed.warnings,
+      skipped_lines: parsed.skipped_lines,
+    };
+  }
+
+  // ── 新建模式(原行为) ──
   const recipeId = typeof body.recipe_id === 'string' ? body.recipe_id.trim() : '';
   if (!recipeId) {
     return {
@@ -844,17 +946,7 @@ export async function deskImportChat(env: DeskEnv, body: any): Promise<any> {
         : `recipe_id 字段类型不对,应该是非空字符串,实际收到的是 ${describeType(body.recipe_id)}`,
     };
   }
-  const raw = body.raw;
-  if (typeof raw !== 'string') {
-    return { success: false, error: `raw 字段类型不对,应该是字符串(JSONL全文),实际收到的是 ${describeType(raw)}` };
-  }
   const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim() : undefined;
-
-  const parsed = parseChatJsonl(raw);
-  if (!parsed.ok) return { success: false, error: parsed.error };
-  if (parsed.floors.length === 0) {
-    return { success: false, error: `聊天记录里 0 条有效楼层(共跳过 ${parsed.skipped_lines} 行)——${biggestSkipReason(parsed.warnings)}` };
-  }
 
   const created = await deskWindowCreate(env, { project, recipe_id: recipeId, title: title || '' });
   if (!created.success) return created; // 建窗失败(配方不存在等)原样透传

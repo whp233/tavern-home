@@ -116,11 +116,14 @@ function nextChapterNo(rows: ChapterRow[], capped: boolean): string {
   return String(max + 1);
 }
 
-export default function ChaptersStudio({ base, envOk, project, onEditorOpenChange }: {
+export default function ChaptersStudio({ base, envOk, project, onEditorOpenChange, initialEditId }: {
   base: string; envOk: boolean; project: string;
   // 编辑器开着时报给外层(读书角):它头上那个项目选择器要锁住。理由见下面 [project] effect 那段
   // ——项目一换,这里的草稿就会被写进别的项目。
   onEditorOpenChange?: (open: boolean) => void;
+  // 从读书角「去章节工房改」跳进来时,指定要自动打开编辑器的那一章 id——
+  // 列表加载完找到这一行就直接开行内编辑,跳过"先看章节架列表再点编辑"这一步。
+  initialEditId?: string;
 }) {
   // ── 章节架列表 ──
   const [chapters, setChapters] = useState<ChapterRow[]>([]);
@@ -325,6 +328,23 @@ export default function ChaptersStudio({ base, envOk, project, onEditorOpenChang
     editingIdRef.current = null;
     setEditingId(null); setEditLoading(false); setEditError(''); setEditLoadError('');
   }
+  // ── 读书角「去章节工坊改」直达编辑:initialEditId 指定的那章在列表里出现就自动开编辑 ──
+  // 列表加载是异步的(project 切换后 chapters 先空、再填充),所以不直接在 jumpToStudio 同步触发,
+  // 而是等 chapters 里真的出现这一行再开。用 ref 记"这一章已经自动开过"——列表刷新(保存后
+  // setNonce 重拉)会重跑这个 effect,不能让保存完又弹回编辑态。
+  const autoOpenedIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!initialEditId) return;
+    if (autoOpenedIdRef.current === initialEditId) return; // 这一章已经自动开过,不再重复
+    if (editingId || creating) return; // 编辑器已经开着,别抢
+    const row = chapters.find((c) => c.id === initialEditId);
+    if (!row) return; // 列表还没拉到这一行,等下次 chapters 变化再试
+    autoOpenedIdRef.current = initialEditId;
+    startRowEdit(row);
+    // startRowEdit 引用自本 effect 下方,函数提升不适用(函数声明已在该文件同作用域),lint 会拦?
+    // 不拦:startRowEdit 是 function 声明,在当前组件函数体内,effect 回调闭包捕获的是调用时的新值。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chapters, initialEditId, editingId, creating]);
   // 保存链路要同一套令牌闸:A保存中途若被"取消→开B的编辑"抢跑,A的PUT迟到成功
   // 会无条件 setEditingId(null)+刷列表,把B刚开的编辑面板(可能还没保存的输入)一起关掉。
   // 现在挡两层:①UI+handler双闸禁用取消钮/别行编辑入口(正常路径下这段时序物理走不到)

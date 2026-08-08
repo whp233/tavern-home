@@ -3929,6 +3929,8 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
             // 逻辑一字不改只搬家,switchRecipe/recipeSwitchingRef那整套互斥+model state仍然
             // 活在这个组件里,这里只是把渲染委托给 DeskDrawerHub。列表屏那颗文具盒(下面
             // project=project那个调用点)没有当前窗,不传这个 prop。
+            // currentWindowId 传给导入口:聊天记录"合并到已有窗"模式默认预选这扇正在看的窗。
+            currentWindowId={win.id}
             windowSettings={{
               recipeId: win.recipe_id,
               recipeOptions,

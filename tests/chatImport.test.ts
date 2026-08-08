@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseChatJsonl } from '../src/core/chatImport.ts';
+import { parseChatJsonl, mergeFloors } from '../src/core/chatImport.ts';
 
 test('parses a legal user/assistant alternating JSONL with swipes', () => {
   const raw = [
@@ -174,4 +174,67 @@ test('rejects non-string input', () => {
   assert.equal(r.ok, false);
   const r2 = parseChatJsonl(123 as any);
   assert.equal(r2.ok, false);
+});
+
+// ===== mergeFloors:合并判重(方案A:role+content 完全一致算重复,只追加不删除)=====
+
+function floor(role: 'user' | 'assistant', content: string, createdAt = '2000-01-01T00:00:00.000Z'): any {
+  return { role, content, variants: [content], activeVariant: 0, createdAt };
+}
+
+test('mergeFloors: keeps existing, adds only non-duplicate incoming, in order', () => {
+  const existing = [floor('user', 'a'), floor('assistant', 'b')];
+  const incoming = [
+    floor('user', 'a'),      // 重复 → 跳过
+    floor('assistant', 'b'), // 重复 → 跳过
+    floor('user', 'c'),      // 新 → 保留
+    floor('assistant', 'd'), // 新 → 保留
+  ];
+  const r = mergeFloors(existing, incoming);
+  assert.equal(r.skipped, 2);
+  assert.equal(r.floors.length, 2);
+  assert.equal(r.floors[0].content, 'c');
+  assert.equal(r.floors[1].content, 'd');
+});
+
+test('mergeFloors: dedupes within the incoming batch itself', () => {
+  const incoming = [
+    floor('user', 'same'),
+    floor('user', 'same'),   // 同批重复 → 只落一条
+    floor('assistant', 'x'),
+  ];
+  const r = mergeFloors([], incoming);
+  assert.equal(r.skipped, 1);
+  assert.equal(r.floors.length, 2);
+  assert.deepEqual(r.floors.map((f) => f.content), ['same', 'x']);
+});
+
+test('mergeFloors: role matters for dedup (same content, different role is NOT a duplicate)', () => {
+  const existing = [floor('user', 'hi')];
+  const incoming = [
+    floor('user', 'hi'),      // 同 role 同内容 → 重复
+    floor('assistant', 'hi'), // 不同 role → 新
+  ];
+  const r = mergeFloors(existing, incoming);
+  assert.equal(r.skipped, 1);
+  assert.equal(r.floors.length, 1);
+  assert.equal(r.floors[0].role, 'assistant');
+});
+
+test('mergeFloors: empty existing keeps all incoming; empty incoming adds nothing', () => {
+  assert.equal(mergeFloors([], [floor('user', 'a')]).floors.length, 1);
+  const r = mergeFloors([floor('user', 'a')], []);
+  assert.equal(r.floors.length, 0);
+  assert.equal(r.skipped, 0);
+});
+
+test('mergeFloors: preserves createdAt of kept floors (new messages keep their timestamp)', () => {
+  const existing = [floor('user', 'old')];
+  const incoming = [
+    floor('user', 'old'),
+    floor('assistant', 'new', '2026-08-08T10:00:00.000Z'),
+  ];
+  const r = mergeFloors(existing, incoming);
+  assert.equal(r.floors.length, 1);
+  assert.equal(r.floors[0].createdAt, '2026-08-08T10:00:00.000Z');
 });

@@ -335,12 +335,25 @@ export default function ReadingCorner({
   // 跳去章节工房。
 
   // 阅读页 →「去章节工房改这一章」:章节工房按 project 组织,把这一章的项目一并递过去,
-  // 落地就是这一章所在的那一架,不用她再选一次。
+  // 落地就是这一章所在的那一架,不用她再选一次。同时记下这一章的 id,让章节工房挂载后
+  // 直接自动打开这一章的编辑界面(跳过章节架列表那一步)。
+  const [studioInitialEditId, setStudioInitialEditId] = useState<string | null>(null);
   function jumpToStudio() {
     if (!chapter) return;
     onChaptersProjectChange(chapter.project && chapter.project.trim() ? chapter.project : null);
+    setStudioInitialEditId(chapter.id);
     onMainTabChange('chapters');
   }
+
+  // 离开章节工房 tab(切去阅读或别处)时清掉"待直达编辑"的那一章 id——
+  // 不然下次手动点「章节工房」tab 还会把上次那章自动弹进编辑态,而她只是想看章节架。
+  // 照上面 prevMainTabRef 同款手法:只在"离开 chapters"那一刻动作。
+  useEffect(() => {
+    const prev = prevMainTabRef.current;
+    if (prev === 'chapters' && mainTab !== 'chapters') {
+      setStudioInitialEditId(null);
+    }
+  }, [mainTab]);
 
   const replyTarget = replyTo ? comments.find((c) => c.id === replyTo) : null;
 
@@ -388,7 +401,7 @@ export default function ReadingCorner({
             )}
           </div>
           {chaptersProject ? (
-            <ChaptersStudio base={base} envOk={envOk} project={chaptersProject} onEditorOpenChange={setStudioEditorOpen} />
+            <ChaptersStudio base={base} envOk={envOk} project={chaptersProject} onEditorOpenChange={setStudioEditorOpen} initialEditId={studioInitialEditId ?? undefined} />
           ) : (
             <div className="card" style={{ ...glassCardStyle, padding: '20px 24px', fontSize: 13, color: 'var(--ink2)' }}>
               先选一个项目,才能看它的章节架~
