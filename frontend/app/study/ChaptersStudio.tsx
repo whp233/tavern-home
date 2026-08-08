@@ -21,7 +21,17 @@ type ChapterRow = {
   created_at: string;
   updated_at: string;
   published_at?: string | null;
+  deleted_at?: string | null; // 非空=进了回收站(回收站视图服务端回填)
 };
+
+// 状态筛选 tab:全部/已发布/未发布都在本地过滤(chapters 一次拉全),回收站单独请求 ?status=trashed
+type Filter = 'all' | 'published' | 'draft' | 'trashed';
+const FILTER_TABS: { key: Filter; label: string }[] = [
+  { key: 'all', label: '全部' },
+  { key: 'published', label: '已发布' },
+  { key: 'draft', label: '未发布' },
+  { key: 'trashed', label: '回收站' },
+];
 
 // ── 卡片风格小料(与 page.tsx/ReadingCorner.tsx 同款数值,组件独立成文件故各自留一份) ──
 const cardStyle: React.CSSProperties = {
@@ -88,6 +98,11 @@ function naturalCompareChapterNo(a?: string | number | null, b?: string | number
   return 0;
 }
 
+// 章节架行按章号自然升序排(恢复/批量恢复把行塞回列表后要重排,保持跟主列表同款排序)
+function sortRows(rows: ChapterRow[]): ChapterRow[] {
+  return [...rows].sort((a, b) => naturalCompareChapterNo(a.chapter_no, b.chapter_no));
+}
+
 // 新建章节默认章号=当前项目已有章节里最大数字段+1(非数字/空章号不计入,取不到就从1开始)。
 // capped=true(列表触顶,没拉全):算出来的 max 可能不是真 max,悄悄给个号很可能撞号——
 // 宁可留空逼她自己填,也不要一个看着正常实则可能错的默认值。
@@ -117,13 +132,30 @@ export default function ChaptersStudio({ base, envOk, project, onEditorOpenChang
   // 照本仓 DeskDrawers.tsx presetsSeqRef 同款家法,用令牌不用 AbortController,提交前核对 tok 还新鲜。
   const chaptersSeqRef = useRef(0);
 
+  // ── 状态筛选 + 回收站 ──
+  // 全部/已发布/未发布共用 chapters(主列表一次拉全,前端本地过滤);回收站单独一份状态,
+  // 只在切到回收站 tab 时请求 ?status=trashed。trashNonce 只在回收站操作(恢复/彻底删)后 +1。
+  const [filter, setFilter] = useState<Filter>('all');
+  const [trashChapters, setTrashChapters] = useState<ChapterRow[]>([]);
+  const [trashLoading, setTrashLoading] = useState(false);
+  const [trashError, setTrashError] = useState('');
+  const [trashNonce, setTrashNonce] = useState(0);
+  const trashSeqRef = useRef(0);
+
+  // 换 tab 时清空多选:旧 tab 的选中 id 悬在新 tab 的列表上没有意义(行都不是同一批)。
+  function switchFilter(f: Filter) {
+    if (f === filter) return;
+    setFilter(f);
+    setSelected(new Set());
+  }
+
   useEffect(() => {
     if (!envOk) { setListError('环境变量没配好'); setLoading(false); return; }
     setLoading(true); setListError('');
     const tok = ++chaptersSeqRef.current;
     (async () => {
       try {
-        const qs = new URLSearchParams({ project, limit: String(CHAPTERS_FETCH_LIMIT) }); // 不传 status:草稿+已发布都要看
+        const qs = new URLSearchParams({ project, limit: String(CHAPTERS_FETCH_LIMIT) }); // 不传 status:草稿+已发布都要看(软删的默认排除)
         const res = await fetch(`${base}/api/oc/chapters?${qs.toString()}`);
         const d = await res.json().catch(() => null);
         if (!res.ok || !d || d.success === false) throw new Error(d?.error || `HTTP ${res.status}`);
@@ -140,6 +172,30 @@ export default function ChaptersStudio({ base, envOk, project, onEditorOpenChang
       }
     })();
   }, [base, envOk, project, nonce]);
+
+  // ── 回收站列表:只在 filter==='trashed' 时干活,独立令牌(trashSeqRef)跟主列表互不干扰 ──
+  useEffect(() => {
+    if (filter !== 'trashed') return;
+    if (!envOk) { setTrashError('环境变量没配好'); setTrashLoading(false); return; }
+    setTrashLoading(true); setTrashError('');
+    const tok = ++trashSeqRef.current;
+    (async () => {
+      try {
+        const qs = new URLSearchParams({ project, status: 'trashed', limit: String(CHAPTERS_FETCH_LIMIT) });
+        const res = await fetch(`${base}/api/oc/chapters?${qs.toString()}`);
+        const d = await res.json().catch(() => null);
+        if (!res.ok || !d || d.success === false) throw new Error(d?.error || `HTTP ${res.status}`);
+        if (tok !== trashSeqRef.current) return;
+        const rows: ChapterRow[] = Array.isArray(d.chapters) ? d.chapters : [];
+        setTrashChapters(rows); // 回收站按服务端返回顺序(创建时间新的在前)展示,不重排
+      } catch (e: any) {
+        if (tok !== trashSeqRef.current) return;
+        setTrashError(e.message || '回收站翻不开'); setTrashChapters([]);
+      } finally {
+        if (tok === trashSeqRef.current) setTrashLoading(false);
+      }
+    })();
+  }, [base, envOk, project, filter, trashNonce]);
 
   // ── 新建 ── content(正文/篇章总结)=主字段,summary(检索gist)=可选副字段
   const [creating, setCreating] = useState(false);
@@ -313,18 +369,21 @@ export default function ChaptersStudio({ base, envOk, project, onEditorOpenChang
       const res = await fetch(`${base}/api/oc/chapters/${c.id}/${action}`, { method: 'POST' });
       const d = await res.json().catch(() => null);
       if (!res.ok || !d || d.success !== true) throw new Error(d?.error || `${action === 'publish' ? '发布' : '撤稿'}失败(服务端没确认成功)`);
-      setNonce((n) => n + 1);
+      // 增量更新:只改这一行的 status,不整表重拉(修"闪回"——列表不闪到 loading)。
+      // 当前在"已发布/未发布"筛选下,status 一变这一行自然从可见集里消失/出现,筛选是渲染期算的。
+      const nextStatus: ChapterRow['status'] = action === 'publish' ? 'published' : 'draft';
+      setChapters((prev) => prev.map((x) => (x.id === c.id ? { ...x, status: nextStatus } : x)));
     } catch (e: any) { setPubError((s) => ({ ...s, [c.id]: e.message || '操作失败' })); }
     finally { setPubBusyId(null); }
   }
 
-  // ── 删除(两段确认) ──
+  // ── 删除(两段确认)── 普通列表的删除=软删进回收站;回收站里的"彻底删除"复用同一套两段确认
   const [delStage, setDelStage] = useState<Record<string, 0 | 1>>({});
   const delTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const [delBusyId, setDelBusyId] = useState<string | null>(null);
   const [delError, setDelError] = useState<Record<string, string>>({});
 
-  function onDeleteClick(id: string) {
+  function onDeleteClick(id: string, permanent = false) {
     const stage = delStage[id] || 0;
     if (stage === 0) {
       setDelStage((s) => ({ ...s, [id]: 1 }));
@@ -333,7 +392,8 @@ export default function ChaptersStudio({ base, envOk, project, onEditorOpenChang
       return;
     }
     if (delTimers.current[id]) clearTimeout(delTimers.current[id]);
-    handleDelete(id);
+    if (permanent) handleDeletePermanent(id);
+    else handleDelete(id);
   }
   async function handleDelete(id: string) {
     setDelBusyId(id); setDelError((s) => ({ ...s, [id]: '' }));
@@ -344,11 +404,140 @@ export default function ChaptersStudio({ base, envOk, project, onEditorOpenChang
       if (!res.ok || !d || d.success !== true) throw new Error(d?.error || '删除失败(服务端没确认成功)');
       setDelStage((s) => ({ ...s, [id]: 0 }));
       if (editingId === id) setEditingId(null);
-      setNonce((n) => n + 1);
+      // 增量更新:软删成功,这一行直接从章节架消失,不整表重拉(修"闪回")
+      setChapters((prev) => prev.filter((c) => c.id !== id));
+      setSelected((prev) => { if (!prev.has(id)) return prev; const n = new Set(prev); n.delete(id); return n; });
     } catch (e: any) {
       setDelError((s) => ({ ...s, [id]: e.message || '删除失败' }));
       setDelStage((s) => ({ ...s, [id]: 0 }));
     } finally { setDelBusyId(null); }
+  }
+  async function handleDeletePermanent(id: string) {
+    setDelBusyId(id); setDelError((s) => ({ ...s, [id]: '' }));
+    try {
+      if (!envOk) throw new Error('环境变量没配好');
+      const res = await fetch(`${base}/api/oc/chapters/${id}/delete-permanent`, { method: 'POST' });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d || d.success !== true) throw new Error(d?.error || '彻底删除失败(服务端没确认成功)');
+      setDelStage((s) => ({ ...s, [id]: 0 }));
+      // 增量更新:真删成功,这一行从回收站消失,不整表重拉
+      setTrashChapters((prev) => prev.filter((c) => c.id !== id));
+      setSelected((prev) => { if (!prev.has(id)) return prev; const n = new Set(prev); n.delete(id); return n; });
+    } catch (e: any) {
+      setDelError((s) => ({ ...s, [id]: e.message || '彻底删除失败' }));
+      setDelStage((s) => ({ ...s, [id]: 0 }));
+    } finally { setDelBusyId(null); }
+  }
+  async function restoreOne(c: ChapterRow) {
+    setDelBusyId(c.id); setDelError((s) => ({ ...s, [c.id]: '' }));
+    try {
+      if (!envOk) throw new Error('环境变量没配好');
+      const res = await fetch(`${base}/api/oc/chapters/${c.id}/restore`, { method: 'POST' });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d || d.success !== true) throw new Error(d?.error || '恢复失败(服务端没确认成功)');
+      // 增量更新:从回收站挪回章节架(status 保持原样),两边都不整表重拉
+      setTrashChapters((prev) => prev.filter((x) => x.id !== c.id));
+      setChapters((prev) => sortRows([...prev, c]));
+    } catch (e: any) {
+      setDelError((s) => ({ ...s, [c.id]: e.message || '恢复失败' }));
+    } finally { setDelBusyId(null); }
+  }
+
+  // ── 多选 + 批量操作 ──
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [batchError, setBatchError] = useState('');
+  // 批量删除/彻底删除的两段确认(照行删除 delStage 的家法,但整批只保留一个全局档位)
+  const [batchDelStage, setBatchDelStage] = useState<0 | 1>(0);
+  const batchDelTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const batchDelAction = useRef<null | 'soft' | 'permanent'>(null);
+
+  function toggleSelect(id: string) {
+    setSelected((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  }
+
+  // 批量内核:前端 foreach 顺序调单章 API(项目轻后端哲学,没有批量端点)。全部成功才整体更新;
+  // 中途失败停手并报错——已成功的部分照样落屏(部分成功=按成功清单增量更新),不给用户"全成功"的假象。
+  async function callOne(path: string, method: string, failLabel: string): Promise<void> {
+    if (!envOk) throw new Error('环境变量没配好');
+    const res = await fetch(`${base}${path}`, { method });
+    const d = await res.json().catch(() => null);
+    if (!res.ok || !d || d.success !== true) throw new Error(d?.error || failLabel);
+  }
+  async function runBatchFor(
+    ids: string[],
+    doOne: (id: string) => Promise<void>,
+    applyOk: (ok: string[]) => void,
+    failLabel: string,
+  ) {
+    setBatchBusy(true); setBatchError('');
+    const ok: string[] = [];
+    let failMsg = '';
+    for (const id of ids) {
+      try { await doOne(id); ok.push(id); }
+      catch (e: any) { failMsg = e.message || failLabel; break; }
+    }
+    if (ok.length) {
+      applyOk(ok);
+      setSelected(new Set());
+    }
+    if (failMsg) setBatchError(failMsg);
+    setBatchBusy(false);
+  }
+  function batchPublish() {
+    const ids = [...selected]; if (!ids.length) return;
+    runBatchFor(ids, (id) => callOne(`/api/oc/chapters/${id}/publish`, 'POST', '批量发布失败'), (ok) => {
+      const okSet = new Set(ok);
+      setChapters((prev) => prev.map((c) => (okSet.has(c.id) ? { ...c, status: 'published' } : c)));
+    }, '批量发布失败');
+  }
+  function batchUnpublish() {
+    const ids = [...selected]; if (!ids.length) return;
+    runBatchFor(ids, (id) => callOne(`/api/oc/chapters/${id}/unpublish`, 'POST', '批量撤回失败'), (ok) => {
+      const okSet = new Set(ok);
+      setChapters((prev) => prev.map((c) => (okSet.has(c.id) ? { ...c, status: 'draft' } : c)));
+    }, '批量撤回失败');
+  }
+  function batchDeleteSoft() {
+    const ids = [...selected]; if (!ids.length) return;
+    runBatchFor(ids, (id) => callOne(`/api/oc/chapters/${id}`, 'DELETE', '批量删除失败'), (ok) => {
+      const okSet = new Set(ok);
+      setChapters((prev) => prev.filter((c) => !okSet.has(c.id)));
+    }, '批量删除失败');
+  }
+  function batchRestore() {
+    const ids = [...selected]; if (!ids.length) return;
+    runBatchFor(ids, (id) => callOne(`/api/oc/chapters/${id}/restore`, 'POST', '批量恢复失败'), (ok) => {
+      const okSet = new Set(ok);
+      const restored = trashChapters.filter((c) => okSet.has(c.id));
+      setTrashChapters((prev) => prev.filter((c) => !okSet.has(c.id)));
+      setChapters((prev) => sortRows([...prev, ...restored]));
+    }, '批量恢复失败');
+  }
+  function batchDeletePermanent() {
+    const ids = [...selected]; if (!ids.length) return;
+    runBatchFor(ids, (id) => callOne(`/api/oc/chapters/${id}/delete-permanent`, 'POST', '批量彻底删除失败'), (ok) => {
+      const okSet = new Set(ok);
+      setTrashChapters((prev) => prev.filter((c) => !okSet.has(c.id)));
+    }, '批量彻底删除失败');
+  }
+  function onBatchDeleteClick(mode: 'soft' | 'permanent') {
+    if (batchDelStage === 0) {
+      batchDelAction.current = mode;
+      setBatchDelStage(1);
+      if (batchDelTimer.current) clearTimeout(batchDelTimer.current);
+      batchDelTimer.current = setTimeout(() => { setBatchDelStage(0); batchDelAction.current = null; }, 3000);
+      return;
+    }
+    if (batchDelTimer.current) clearTimeout(batchDelTimer.current);
+    const m = batchDelAction.current;
+    setBatchDelStage(0); batchDelAction.current = null;
+    if (m === 'permanent') batchDeletePermanent();
+    else batchDeleteSoft();
   }
 
   // 编辑器视图:多行 textarea 写几千字的篇章总结体验很差,所以新建/编辑都占满整个章节工房,
@@ -370,6 +559,27 @@ export default function ChaptersStudio({ base, envOk, project, onEditorOpenChang
   const setF = isNew ? setNewForm : setEditForm;
   const formBusy = isNew ? createBusy : editBusy;
   const formError = isNew ? createError : editError;
+
+  // ── 可见行:回收站看 trashChapters,其余 tab 在 chapters 上本地过滤(筛选是渲染期算的)──
+  const trashView = filter === 'trashed';
+  const visibleChapters = trashView ? trashChapters
+    : filter === 'published' ? chapters.filter((c) => c.status === 'published')
+    : filter === 'draft' ? chapters.filter((c) => c.status === 'draft')
+    : chapters;
+  const allVisibleSelected = visibleChapters.length > 0 && visibleChapters.every((c) => selected.has(c.id));
+  function toggleSelectAll() {
+    const ids = visibleChapters.map((c) => c.id);
+    setSelected((prev) => {
+      const n = new Set(prev);
+      if (allVisibleSelected) ids.forEach((id) => n.delete(id));
+      else ids.forEach((id) => n.add(id));
+      return n;
+    });
+  }
+  const emptyText = trashView ? '回收站是空的~删除的章节会先进这里,还能恢复'
+    : filter === 'published' ? '还没有已发布的章节~发布后才会出现在这里'
+    : filter === 'draft' ? '还没有未发布的章节~'
+    : '这个项目还没有章节~点上面「+ 新建章节」写第一章的篇章总结';
 
   return (
     <>
@@ -469,80 +679,272 @@ export default function ChaptersStudio({ base, envOk, project, onEditorOpenChang
       <>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 12.5, color: 'var(--ink2)', maxWidth: 560 }}>
-          章节架按章号排序。「篇章总结」正文是打字桌常驻记忆和读书角阅读页真正显示的内容;检索gist可选,不填就用正文开头当检索坐标。保存后检索坐标自动更新。
+          {trashView
+            ? '回收站里是软删的章节(正文/评论/检索坐标都还在),恢复后原样回到章节架;彻底删除才真正删掉,删了找不回来。'
+            : '章节架按章号排序。「篇章总结」正文是打字桌常驻记忆和读书角阅读页真正显示的内容;检索gist可选,不填就用正文开头当检索坐标。保存后检索坐标自动更新。'}
         </div>
-        <button className="serc" onClick={openCreate} style={btnPrimaryStyle}>+ 新建章节</button>
+        {!trashView && <button className="serc" onClick={openCreate} style={btnPrimaryStyle}>+ 新建章节</button>}
       </div>
 
-      {/* 触顶横幅:静默截断=故障,返回条数打到 CHAPTERS_FETCH_LIMIT 就得亮说,
-          不能让她以为"这就是全部章节"(全套游标分页留到真正需要时再加) */}
-      {chaptersHitCap && !loading && !listError && (
-        <div style={warnBannerStyle}>⚠️ 章节太多,这页只拉到了前 {CHAPTERS_FETCH_LIMIT} 条,可能没显示全——后续需要时再加分页支持</div>
+      {/* 状态筛选 tabs:全部/已发布/未发布本地过滤,回收站单独拉 ?status=trashed */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+        {FILTER_TABS.map((t) => (
+          <button
+            key={t.key}
+            className="serc"
+            onClick={() => switchFilter(t.key)}
+            style={{
+              ...pillStyle,
+              background: filter === t.key ? 'var(--accent)' : 'var(--card-bg)',
+              color: filter === t.key ? 'var(--card-bg)' : 'var(--ink2)',
+            }}
+          >
+            {t.label}
+            {t.key === 'trashed' && trashChapters.length > 0 ? ` (${trashChapters.length})` : ''}
+          </button>
+        ))}
+      </div>
+
+      {/* 批量工具条:选中时就出现;按钮按当前视图给(普通列表=发布/撤回/软删,回收站=恢复/彻底删) */}
+      {(selected.size > 0 || batchBusy) && (
+        <div className="card" style={{ ...cardStyle, padding: '10px 16px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12.5, color: 'var(--ink2)' }}>
+            {batchBusy ? '批量处理中…' : `已选 ${selected.size} 章`}
+          </span>
+          {!batchBusy && !trashView && (
+            <>
+              <button className="serc" onClick={batchPublish} style={pillStyle}>全部发布</button>
+              <button className="serc" onClick={batchUnpublish} style={pillStyle}>全部撤回</button>
+              <button
+                className="serc"
+                onClick={() => onBatchDeleteClick('soft')}
+                style={{
+                  ...pillStyle,
+                  color: batchDelStage === 1 ? '#fffdf5' : '#c2693f',
+                  background: batchDelStage === 1 ? '#c2693f' : 'var(--card-bg)',
+                }}
+              >
+                {batchDelStage === 1 ? '真的全删?再点一次' : '全部删除'}
+              </button>
+            </>
+          )}
+          {!batchBusy && trashView && (
+            <>
+              <button className="serc" onClick={batchRestore} style={pillStyle}>全部恢复</button>
+              <button
+                className="serc"
+                onClick={() => onBatchDeleteClick('permanent')}
+                style={{
+                  ...pillStyle,
+                  color: batchDelStage === 1 ? '#fffdf5' : '#c2693f',
+                  background: batchDelStage === 1 ? '#c2693f' : 'var(--card-bg)',
+                }}
+              >
+                {batchDelStage === 1 ? '真的全删?再点一次' : '全部彻底删除'}
+              </button>
+            </>
+          )}
+          {!batchBusy && (
+            <button className="serc" onClick={() => setSelected(new Set())} style={pillStyle}>取消选择</button>
+          )}
+          {batchError && <span style={{ ...errStyle, marginTop: 0 }}>{batchError}</span>}
+        </div>
       )}
 
-      {loading ? (
-        <div className="card" style={{ ...cardStyle, padding: '20px 24px', fontSize: 13, color: 'var(--ink2)' }}>正在翻章节架…</div>
-      ) : listError ? (
-        <div className="card" style={{ ...cardStyle, padding: '20px 24px', fontSize: 13, color: '#c2693f' }}>翻不开：{listError}</div>
-      ) : chapters.length === 0 ? (
-        <div className="card" style={{ ...cardStyle, padding: '20px 24px', fontSize: 13, color: 'var(--ink2)' }}>这个项目还没有章节~点上面「+ 新建章节」写第一章的篇章总结</div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {chapters.map((c) => (
-            <div key={c.id} className="card" style={{ ...cardStyle, padding: '16px 20px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    {c.chapter_no != null && c.chapter_no !== '' && <span style={{ fontSize: 12, color: 'var(--ink2)' }}>第{c.chapter_no}章</span>}
-                    <span className="serc" style={{ fontSize: 15.5, color: 'var(--ink-deep)' }}>{c.title}</span>
-                    <span style={{ fontSize: 11, color: 'var(--card-bg)', background: c.status === 'published' ? 'var(--scale-3)' : 'var(--ink2)', borderRadius: 20, padding: '2px 10px' }}>
-                      {c.status === 'published' ? '已发布' : '草稿'}
-                    </span>
-                  </div>
-                  <span style={{ fontSize: 11.5, color: 'var(--ink2)', flex: 'none' }}>{fmtMD(c.updated_at)} 改过</span>
-                </div>
-
-                {/* 列表行预览=正文(content)前若干字,服务端 chaptersList 已经截好放在 preview 字段——
-                    别显示 summary,那是可选检索gist,不是"这一章讲了什么"的可读预览 */}
-                <div style={{ fontSize: 12.5, color: 'var(--ink-body)', marginTop: 8, ...clamp2 }}>
-                  {c.preview || <span style={{ color: 'var(--ink2)' }}>(还没写正文)</span>}
-                </div>
-
-                {pubError[c.id] && <div style={errStyle}>{pubError[c.id]}</div>}
-                {delError[c.id] && <div style={errStyle}>{delError[c.id]}</div>}
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-                  {/* 保存在飞时(editBusy)这颗编辑入口禁用——handler 里 startRowEdit 顶部同款守卫,双闸。
-                      编辑器改成整屏之后这一条在正常路径上已经够不着了(editBusy 只可能在编辑器视图里为真,
-                      那时列表压根不渲染),但闸留着不撤:别只靠"渲染不出来"当锁。*/}
-                  <button className="serc" onClick={() => startRowEdit(c)} disabled={editBusy} style={{ ...pillStyle, opacity: editBusy ? 0.6 : 1 }}>编辑</button>
-                  <button
-                    className="serc"
-                    onClick={() => togglePublish(c)}
-                    disabled={pubBusyId === c.id}
-                    style={{ ...pillStyle, opacity: pubBusyId === c.id ? 0.6 : 1 }}
-                  >
-                    {pubBusyId === c.id ? '处理中…' : c.status === 'published' ? '撤稿' : '发布'}
-                  </button>
-                  <button
-                    className="serc"
-                    onClick={() => onDeleteClick(c.id)}
-                    disabled={delBusyId === c.id}
-                    style={{
-                      ...pillStyle,
-                      color: delStage[c.id] === 1 ? '#fffdf5' : '#c2693f',
-                      background: delStage[c.id] === 1 ? '#c2693f' : 'var(--card-bg)',
-                      opacity: delBusyId === c.id ? 0.6 : 1,
-                    }}
-                  >
-                    {delBusyId === c.id ? '删除中…' : delStage[c.id] === 1 ? '真的删?再点一次' : '删除'}
-                  </button>
-                  <span style={{ ...hintStyle, marginTop: 0 }}>
-                    {c.status === 'published' ? '已发布,在打字桌记忆和读书角里能看到它' : '发布后才进打字桌记忆和读书角'}
-                  </span>
-                </div>
+      {trashView ? (
+        trashLoading ? (
+          <div className="card" style={{ ...cardStyle, padding: '20px 24px', fontSize: 13, color: 'var(--ink2)' }}>正在翻回收站…</div>
+        ) : trashError ? (
+          <div className="card" style={{ ...cardStyle, padding: '20px 24px', fontSize: 13, color: '#c2693f' }}>翻不开：{trashError}</div>
+        ) : visibleChapters.length === 0 ? (
+          <div className="card" style={{ ...cardStyle, padding: '20px 24px', fontSize: 13, color: 'var(--ink2)' }}>{emptyText}</div>
+        ) : (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <label style={{ fontSize: 12.5, color: 'var(--ink2)', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                <input type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAll} disabled={batchBusy || visibleChapters.length === 0} />
+                全选
+              </label>
+              <span style={{ fontSize: 12, color: 'var(--ink2)' }}>{visibleChapters.length} 章</span>
             </div>
-          ))}
-        </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {visibleChapters.map((c) => (
+                <div key={c.id} className="card" style={{ ...cardStyle, padding: '16px 20px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <input
+                        type="checkbox"
+                        checked={selected.has(c.id)}
+                        onChange={() => toggleSelect(c.id)}
+                        disabled={batchBusy}
+                        style={{ cursor: batchBusy ? 'default' : 'pointer' }}
+                      />
+                      {c.chapter_no != null && c.chapter_no !== '' && <span style={{ fontSize: 12, color: 'var(--ink2)' }}>第{c.chapter_no}章</span>}
+                      <span className="serc" style={{ fontSize: 15.5, color: 'var(--ink-deep)' }}>{c.title}</span>
+                      <span style={{ fontSize: 11, color: 'var(--card-bg)', background: c.status === 'published' ? 'var(--scale-3)' : 'var(--ink2)', borderRadius: 20, padding: '2px 10px' }}>
+                        {c.status === 'published' ? '已发布' : '草稿'}
+                      </span>
+                    </div>
+                    <span style={{ fontSize: 11.5, color: 'var(--ink2)', flex: 'none' }}>{fmtMD(c.updated_at)} 改过</span>
+                  </div>
+
+                  {/* 列表行预览=正文(content)前若干字,服务端 chaptersList 已经截好放在 preview 字段——
+                      别显示 summary,那是可选检索gist,不是"这一章讲了什么"的可读预览 */}
+                  <div style={{ fontSize: 12.5, color: 'var(--ink-body)', marginTop: 8, ...clamp2 }}>
+                    {c.preview || <span style={{ color: 'var(--ink2)' }}>(还没写正文)</span>}
+                  </div>
+
+                  {pubError[c.id] && <div style={errStyle}>{pubError[c.id]}</div>}
+                  {delError[c.id] && <div style={errStyle}>{delError[c.id]}</div>}
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+                    {trashView ? (
+                      <>
+                        <button
+                          className="serc"
+                          onClick={() => restoreOne(c)}
+                          disabled={delBusyId === c.id || batchBusy}
+                          style={{ ...pillStyle, opacity: delBusyId === c.id || batchBusy ? 0.6 : 1 }}
+                        >
+                          {delBusyId === c.id ? '恢复中…' : '恢复'}
+                        </button>
+                        <button
+                          className="serc"
+                          onClick={() => onDeleteClick(c.id, true)}
+                          disabled={delBusyId === c.id || batchBusy}
+                          style={{
+                            ...pillStyle,
+                            color: delStage[c.id] === 1 ? '#fffdf5' : '#c2693f',
+                            background: delStage[c.id] === 1 ? '#c2693f' : 'var(--card-bg)',
+                            opacity: delBusyId === c.id || batchBusy ? 0.6 : 1,
+                          }}
+                        >
+                          {delBusyId === c.id ? '删除中…' : delStage[c.id] === 1 ? '真的删?再点一次' : '彻底删除'}
+                        </button>
+                        <span style={{ ...hintStyle, marginTop: 0 }}>在回收站里,恢复后回到章节架,状态保持原样</span>
+                      </>
+                    ) : (
+                      <>
+                        {/* 保存在飞时(editBusy)这颗编辑入口禁用——handler 里 startRowEdit 顶部同款守卫,双闸 */}
+                        <button className="serc" onClick={() => startRowEdit(c)} disabled={editBusy || batchBusy} style={{ ...pillStyle, opacity: editBusy || batchBusy ? 0.6 : 1 }}>编辑</button>
+                        <button
+                          className="serc"
+                          onClick={() => togglePublish(c)}
+                          disabled={pubBusyId === c.id || batchBusy}
+                          style={{ ...pillStyle, opacity: pubBusyId === c.id || batchBusy ? 0.6 : 1 }}
+                        >
+                          {pubBusyId === c.id ? '处理中…' : c.status === 'published' ? '撤稿' : '发布'}
+                        </button>
+                        <button
+                          className="serc"
+                          onClick={() => onDeleteClick(c.id)}
+                          disabled={delBusyId === c.id || batchBusy}
+                          style={{
+                            ...pillStyle,
+                            color: delStage[c.id] === 1 ? '#fffdf5' : '#c2693f',
+                            background: delStage[c.id] === 1 ? '#c2693f' : 'var(--card-bg)',
+                            opacity: delBusyId === c.id || batchBusy ? 0.6 : 1,
+                          }}
+                        >
+                          {delBusyId === c.id ? '删除中…' : delStage[c.id] === 1 ? '真的删?再点一次' : '删除'}
+                        </button>
+                        <span style={{ ...hintStyle, marginTop: 0 }}>
+                          {c.status === 'published' ? '已发布,在打字桌记忆和读书角里能看到它' : '发布后才进打字桌记忆和读书角'}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )
+      ) : (
+        <>
+          {/* 触顶横幅:静默截断=故障,返回条数打到 CHAPTERS_FETCH_LIMIT 就得亮说,
+              不能让她以为"这就是全部章节"(全套游标分页留到真正需要时再加) */}
+          {chaptersHitCap && !loading && !listError && (
+            <div style={warnBannerStyle}>⚠️ 章节太多,这页只拉到了前 {CHAPTERS_FETCH_LIMIT} 条,可能没显示全——后续需要时再加分页支持</div>
+          )}
+          {loading ? (
+            <div className="card" style={{ ...cardStyle, padding: '20px 24px', fontSize: 13, color: 'var(--ink2)' }}>正在翻章节架…</div>
+          ) : listError ? (
+            <div className="card" style={{ ...cardStyle, padding: '20px 24px', fontSize: 13, color: '#c2693f' }}>翻不开：{listError}</div>
+          ) : visibleChapters.length === 0 ? (
+            <div className="card" style={{ ...cardStyle, padding: '20px 24px', fontSize: 13, color: 'var(--ink2)' }}>{emptyText}</div>
+          ) : (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <label style={{ fontSize: 12.5, color: 'var(--ink2)', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAll} disabled={batchBusy || visibleChapters.length === 0} />
+                  全选
+                </label>
+                <span style={{ fontSize: 12, color: 'var(--ink2)' }}>{visibleChapters.length} 章</span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {visibleChapters.map((c) => (
+                  <div key={c.id} className="card" style={{ ...cardStyle, padding: '16px 20px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <input
+                          type="checkbox"
+                          checked={selected.has(c.id)}
+                          onChange={() => toggleSelect(c.id)}
+                          disabled={batchBusy}
+                          style={{ cursor: batchBusy ? 'default' : 'pointer' }}
+                        />
+                        {c.chapter_no != null && c.chapter_no !== '' && <span style={{ fontSize: 12, color: 'var(--ink2)' }}>第{c.chapter_no}章</span>}
+                        <span className="serc" style={{ fontSize: 15.5, color: 'var(--ink-deep)' }}>{c.title}</span>
+                        <span style={{ fontSize: 11, color: 'var(--card-bg)', background: c.status === 'published' ? 'var(--scale-3)' : 'var(--ink2)', borderRadius: 20, padding: '2px 10px' }}>
+                          {c.status === 'published' ? '已发布' : '草稿'}
+                        </span>
+                      </div>
+                      <span style={{ fontSize: 11.5, color: 'var(--ink2)', flex: 'none' }}>{fmtMD(c.updated_at)} 改过</span>
+                    </div>
+
+                    {/* 列表行预览=正文(content)前若干字,服务端 chaptersList 已经截好放在 preview 字段——
+                        别显示 summary,那是可选检索gist,不是"这一章讲了什么"的可读预览 */}
+                    <div style={{ fontSize: 12.5, color: 'var(--ink-body)', marginTop: 8, ...clamp2 }}>
+                      {c.preview || <span style={{ color: 'var(--ink2)' }}>(还没写正文)</span>}
+                    </div>
+
+                    {pubError[c.id] && <div style={errStyle}>{pubError[c.id]}</div>}
+                    {delError[c.id] && <div style={errStyle}>{delError[c.id]}</div>}
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+                      {/* 保存在飞时(editBusy)这颗编辑入口禁用——handler 里 startRowEdit 顶部同款守卫,双闸 */}
+                      <button className="serc" onClick={() => startRowEdit(c)} disabled={editBusy || batchBusy} style={{ ...pillStyle, opacity: editBusy || batchBusy ? 0.6 : 1 }}>编辑</button>
+                      <button
+                        className="serc"
+                        onClick={() => togglePublish(c)}
+                        disabled={pubBusyId === c.id || batchBusy}
+                        style={{ ...pillStyle, opacity: pubBusyId === c.id || batchBusy ? 0.6 : 1 }}
+                      >
+                        {pubBusyId === c.id ? '处理中…' : c.status === 'published' ? '撤稿' : '发布'}
+                      </button>
+                      <button
+                        className="serc"
+                        onClick={() => onDeleteClick(c.id)}
+                        disabled={delBusyId === c.id || batchBusy}
+                        style={{
+                          ...pillStyle,
+                          color: delStage[c.id] === 1 ? '#fffdf5' : '#c2693f',
+                          background: delStage[c.id] === 1 ? '#c2693f' : 'var(--card-bg)',
+                          opacity: delBusyId === c.id || batchBusy ? 0.6 : 1,
+                        }}
+                      >
+                        {delBusyId === c.id ? '删除中…' : delStage[c.id] === 1 ? '真的删?再点一次' : '删除'}
+                      </button>
+                      <span style={{ ...hintStyle, marginTop: 0 }}>
+                        {c.status === 'published' ? '已发布,在打字桌记忆和读书角里能看到它' : '发布后才进打字桌记忆和读书角'}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </>
       )}
       </>
       )}

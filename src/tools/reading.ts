@@ -10,15 +10,16 @@
 // 写权限红线:章节的创建/更新/删除/发布/撤回只在 REST 这组函数里,不进 bookclub——bookclub 对章节永远只读,
 // 唯一的写权限是留言(commentPost),且 author 由调用方硬编码传入,绝不从请求体里读(防调用方冒充宿主身份)。
 //
-// 章总结向量生命周期钩子(打字桌S2 Fix1):update/delete/unpublish 三处写路径各自 best-effort 同步
-// chsum_<id> 向量(delete/unpublish→删向量,update 改了 summary/title 且发布中且非空→重新 embed,
-// summary 被改空→删向量)。跟 study.ts embedMemory 同一条家法:D1 是源真相,向量失败绝不回滚/绝不
-// 让本次写操作报失败,只 console.error 留痕(参见 desk.ts embedChapterSummary 头注释)。
+// 章总结向量生命周期钩子(打字桌S2 Fix1):update/unpublish/deletePermanent 三处写路径各自 best-effort 同步
+// chsum_<id> 向量(deletePermanent/unpublish→删向量,update 改了 summary/title 且发布中且非空→重新 embed,
+// summary 被改空→删向量)。软删(chapterDelete)不碰向量——章还在,恢复后原样能用;已删章的召回拦截
+// 交给装配引擎的 status='published' 水化关卡。跟 study.ts embedMemory 同一条家法:D1 是源真相,向量失败
+// 绝不回滚/绝不让本次写操作报失败,只 console.error 留痕(参见 desk.ts embedChapterSummary 头注释)。
 
-import { deleteVector } from '../storage/vectorize';
-import type { Ai, VectorizeIndex } from '../storage/vectorize';
-import { embedChapterSummary } from './desk';
-import { normalizeProject } from './study';
+import { deleteVector } from '../storage/vectorize.ts';
+import type { Ai, VectorizeIndex } from '../storage/vectorize.ts';
+import { embedChapterSummary } from './desk.ts';
+import { normalizeProject } from './study.ts';
 
 interface ReadingEnv {
   OC_DB: D1Database;
@@ -43,6 +44,7 @@ interface ChapterRow {
   created_at?: string | null;
   updated_at?: string | null;
   published_at?: string | null;
+  deleted_at?: string | null;
   comment_count?: number | null;
 }
 
@@ -114,7 +116,7 @@ function validateFields(body: any): string | null {
 //   两处调用都在这一个文件里、都归我一个人管,拆成私有 helper 纯粹是省得复制一份 SQL 出岔子。=====
 async function queryChapters(
   env: ReadingEnv,
-  opts: { project?: string; status?: string; limit: number; previewLen: number }
+  opts: { project?: string; status?: string; includeTrashed?: boolean; limit: number; previewLen: number }
 ): Promise<any[]> {
   const conditions: string[] = [];
   const values: any[] = [];
@@ -126,8 +128,15 @@ async function queryChapters(
     conditions.push('c.status = ?');
     values.push(opts.status);
   }
+  // 软删除闸门:默认(含 bookclub 的 published 视角)一律排除进回收站的章;只有显式
+  // includeTrashed(回收站视图)才反过来只看已删的。deleted_at 非空=软删,恢复后置 NULL。
+  if (opts.includeTrashed) {
+    conditions.push('c.deleted_at IS NOT NULL');
+  } else {
+    conditions.push('c.deleted_at IS NULL');
+  }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-  // published 视角天然要按章节号读(追更顺序),其余(草稿箱/全量)按创建时间新的在前——
+  // published 视角天然要按章节号读(追更顺序),其余(草稿箱/全量/回收站)按创建时间新的在前——
   // 章节号的最终排序在 JS 里用 naturalCompare 再排一遍(SQL 字符串序会把"第5章"排到"第38章"后面,同 study.ts 的坑)。
   const chapterOrder = opts.status === 'published';
   const baseOrderSql = chapterOrder ? 'c.created_at ASC' : 'c.created_at DESC';
@@ -135,7 +144,7 @@ async function queryChapters(
   // 若 SQL 先按 created_at LIMIT,乱序补写的老章节会被截在窗口外,JS 排序救不回没取到的行——
   // "读者视角漏章"比多取几行贵得多。个人连载全量封顶 CHAPTERS_LIST_MAX(200),取满不心疼。
   const sqlLimit = chapterOrder ? CHAPTERS_LIST_MAX : opts.limit;
-  const sql = `SELECT c.id, c.project, c.chapter_no, c.title, c.summary, c.status, c.created_at, c.updated_at, c.published_at, c.content,
+  const sql = `SELECT c.id, c.project, c.chapter_no, c.title, c.summary, c.status, c.created_at, c.updated_at, c.published_at, c.deleted_at, c.content,
       (SELECT COUNT(*) FROM oc_comments cm WHERE cm.chapter_id = c.id) AS comment_count
     FROM oc_chapters c ${where} ORDER BY ${baseOrderSql} LIMIT ?`;
   values.push(sqlLimit);
@@ -151,6 +160,7 @@ async function queryChapters(
     created_at: row.created_at,
     updated_at: row.updated_at,
     published_at: row.published_at,
+    deleted_at: row.deleted_at,
     comment_count: row.comment_count ?? 0,
     preview: makePreview(row.content, opts.previewLen),
   }));
@@ -171,15 +181,21 @@ async function queryChapters(
 }
 
 // ===== chaptersList:REST 用,列表(过滤+分页,不带全文,预览200字)=====
+// status: 支持 STATUSES 二选一('draft'/'published'),外加回收站专用值 'trashed'——
+// trashed 不是真 status(deleted_at 非空的章保留原 status),只在列表查询里特判:
+// 转成 includeTrashed 让 queryChapters 翻 deleted_at 闸门,不塞进 c.status = ? 的过滤。
 export async function chaptersList(env: ReadingEnv, params: any): Promise<any> {
-  if (params?.status !== undefined && !STATUSES.includes(params.status)) {
-    return { success: false, error: `status 必须是 ${STATUSES.join('/')} 二选一` };
+  const status = params?.status;
+  const trashed = status === 'trashed';
+  if (status !== undefined && status !== 'trashed' && !STATUSES.includes(status)) {
+    return { success: false, error: `status 必须是 ${STATUSES.join('/')} 之一,或 trashed(回收站)` };
   }
   const limit = clamp(params?.limit, CHAPTERS_LIST_DEFAULT, 1, CHAPTERS_LIST_MAX);
   try {
     const chapters = await queryChapters(env, {
       project: params?.project,
-      status: params?.status,
+      status: trashed ? undefined : status,
+      includeTrashed: trashed,
       limit,
       previewLen: 200,
     });
@@ -193,7 +209,7 @@ export async function chaptersList(env: ReadingEnv, params: any): Promise<any> {
 export async function chapterGet(env: ReadingEnv, id: string): Promise<any> {
   if (!id) return { success: false, error: '缺 id' };
   try {
-    const row = await env.OC_DB.prepare(`SELECT * FROM oc_chapters WHERE id = ?`).bind(id).first<ChapterRow>();
+    const row = await env.OC_DB.prepare(`SELECT * FROM oc_chapters WHERE id = ? AND deleted_at IS NULL`).bind(id).first<ChapterRow>();
     if (!row) return { success: false, error: '读书角里没有这一章' };
     return {
       success: true,
@@ -305,7 +321,7 @@ export async function chapterUpdate(env: ReadingEnv, id: string, body: any): Pro
 
   try {
     const meta = await env.OC_DB.prepare(
-      `UPDATE oc_chapters SET ${sets.join(', ')} WHERE id = ?`
+      `UPDATE oc_chapters SET ${sets.join(', ')} WHERE id = ? AND deleted_at IS NULL`
     ).bind(...values).run();
     // 不先查后写(TOCTOU 空隙):直接看这次 UPDATE 改动了几行判断存在性
     if (!meta.meta || meta.meta.changes === 0) {
@@ -342,8 +358,41 @@ export async function chapterUpdate(env: ReadingEnv, id: string, body: any): Pro
   return { success: true, id, updated_at: now };
 }
 
-// ===== chapterDelete:级联删该章评论(db.batch 两条语句,不先查后写)=====
+// ===== chapterDelete:软删——deleted_at 盖章进回收站 =====
+// 语义从"真删"改成"进回收站":不动评论、不动 chsum 向量(恢复时原样能用,向量召回靠
+// status='published' 水化关卡挡已删章,具体见 deskAssemble)。同一章再删一次(已进回收站)
+// 或根本不存在,都按"没有这一章"报错。真删走 chapterDeletePermanent。
 export async function chapterDelete(env: ReadingEnv, id: string): Promise<any> {
+  if (!id) return { success: false, error: '缺 id' };
+  try {
+    const now = new Date().toISOString();
+    const meta = await env.OC_DB.prepare(
+      `UPDATE oc_chapters SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`
+    ).bind(now, id).run();
+    if (!meta.meta || meta.meta.changes === 0) return { success: false, error: '读书角里没有这一章' };
+    return { success: true, id };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+// ===== chapterRestore:回收站恢复——deleted_at 置 NULL,status 保持原样 =====
+export async function chapterRestore(env: ReadingEnv, id: string): Promise<any> {
+  if (!id) return { success: false, error: '缺 id' };
+  try {
+    const meta = await env.OC_DB.prepare(
+      `UPDATE oc_chapters SET deleted_at = NULL WHERE id = ?`
+    ).bind(id).run();
+    if (!meta.meta || meta.meta.changes === 0) return { success: false, error: '读书角里没有这一章' };
+    return { success: true, id };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+// ===== chapterDeletePermanent:彻底删——级联删该章评论(db.batch 两条语句,不先查后写)+ 清向量 =====
+// 软删的逆行,只有回收站里确认"彻底删除"才走这条;删完不可恢复。
+export async function chapterDeletePermanent(env: ReadingEnv, id: string): Promise<any> {
   if (!id) return { success: false, error: '缺 id' };
   try {
     const results = await env.OC_DB.batch([
@@ -356,7 +405,7 @@ export async function chapterDelete(env: ReadingEnv, id: string): Promise<any> {
     try {
       await deleteVector(env.OC_VECTORIZE, `chsum_${id}`);
     } catch (vecErr) {
-      console.error('[reading] delete 章总结向量清理失败(D1 已落地,不回滚):', vecErr);
+      console.error('[reading] deletePermanent 章总结向量清理失败(D1 已落地,不回滚):', vecErr);
     }
     return { success: true, id, comments_deleted: results[0]?.meta?.changes ?? 0 };
   } catch (err: any) {
@@ -370,7 +419,7 @@ export async function chapterPublish(env: ReadingEnv, id: string): Promise<any> 
   const now = new Date().toISOString();
   try {
     const meta = await env.OC_DB.prepare(
-      `UPDATE oc_chapters SET status = 'published', published_at = COALESCE(published_at, ?), updated_at = ? WHERE id = ?`
+      `UPDATE oc_chapters SET status = 'published', published_at = COALESCE(published_at, ?), updated_at = ? WHERE id = ? AND deleted_at IS NULL`
     ).bind(now, now, id).run();
     if (!meta.meta || meta.meta.changes === 0) return { success: false, error: '读书角里没有这一章' };
   } catch (err: any) {
@@ -405,7 +454,7 @@ export async function chapterUnpublish(env: ReadingEnv, id: string): Promise<any
   const now = new Date().toISOString();
   try {
     const meta = await env.OC_DB.prepare(
-      `UPDATE oc_chapters SET status = 'draft', updated_at = ? WHERE id = ?`
+      `UPDATE oc_chapters SET status = 'draft', updated_at = ? WHERE id = ? AND deleted_at IS NULL`
     ).bind(now, id).run();
     if (!meta.meta || meta.meta.changes === 0) return { success: false, error: '读书角里没有这一章' };
     // 撤回成草稿的章不该再被"往事区"召回命中(装配引擎读的是 D1 published 状态,但向量提示本身
