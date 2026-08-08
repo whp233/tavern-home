@@ -48,7 +48,7 @@ OWNER_TOKEN=另一个强口令（管理/MCP 用）
 # opencode 供应商 = 任意 OpenAI 兼容渠道（DeepSeek / 硅基流动 / 自建网关都行）：
 OPENAI_API_KEY=你的key
 OPENAI_BASE_URL=https://api.deepseek.com/v1   # 可选：OpenAI 兼容网关 base
-OPENAI_MODEL=deepseek-chat                     # 可选：wire 模型名，不填走供应商缺省
+OPENAI_MODEL=deepseek-v4-flash                     # 可选：wire 模型名，不填走供应商缺省
 
 # 其它供应商按需配（<前缀>_API_KEY / _BASE_URL / _MODEL 三件套）：
 # DEEPSEEK_API_KEY=…        # DeepSeek 官方
