@@ -285,10 +285,28 @@ export function mergeProviderEnv(env: DeskBackendEnv, overrides: ProviderOverrid
   return merged;
 }
 
+// 模板占位 key 判定:run.bat / .dev.vars 模板生成的示例值("put-your-Anthropic-API-Key-here"、
+// "put-a-strong-password-here"、`<...>`、REPLACE_*/YOUR_* 等)非空但绝不是真实凭据。全新安装
+// 时把它当"已配置"会误导用户以为供应商配好了、实际一调就鉴权失败(见简报「占位 key 陷阱」)。
+// 只识别通用占位形态,不硬编码具体字符串,避免把真实 key(恰好含 -here 之类)误伤。
+export function isPlaceholderKey(key: string | undefined | null): boolean {
+  if (!key) return false;
+  const k = String(key).trim();
+  if (!k) return true; // 全空白 = 没配
+  if (/^<.+>$/.test(k)) return true;                       // <your-api-key>
+  if (/^(REPLACE|YOUR|PUT|your|put)[_-].*/.test(k)) return true; // YOUR_API_KEY / put-your-...
+  if (/^put-/.test(k) && /-here$/i.test(k)) return true;   // put-your-...-here
+  if (/^(your-)?(api[-_]?key|secret|token|password)-?here$/i.test(k)) return true; // api-key-here
+  if (/^xxxx/.test(k) || /^(sk|pk)?[-_]*xxxx/.test(k)) return true; // xxxx 掩码
+  return false;
+}
+
 // "配了"的判据:有 key 或配了 baseUrl(同老渠道 OPENAI 分支的判定口径——配了 baseUrl 但没 key 时不判为
-// 未配置,让后端在调用期回 config 错误,不悄悄回落)。导出给 /provider-config 路由判断 source:'env'。
+// 未配置,让后端在调用期回 config 错误,不悄悄回落)。占位 key 不算配了(模板值不是真实凭据)。
+// 导出给 /provider-config 路由判断 source:'env'。
 export function deskProviderConfigured(env: DeskBackendEnv, def: DeskProviderDef): boolean {
-  return Boolean(env[`${def.prefix}_API_KEY`]) || env[`${def.prefix}_BASE_URL`] !== undefined;
+  const key = env[`${def.prefix}_API_KEY`];
+  return (key !== undefined && key !== null && !isPlaceholderKey(String(key))) || env[`${def.prefix}_BASE_URL`] !== undefined;
 }
 
 // 解析单个供应商的完整配置;返回 null = 没这个供应商或没配。handleDeskChat 的早验与 makeDeskBackend

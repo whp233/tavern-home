@@ -4,7 +4,7 @@ import type { ProviderConfigStore, ProviderOverride } from '../src/core/provider
 import {
   mergeProviderEnv, listProviders, resolveDeskProvider, makeDeskBackend,
   PROVIDER_REGISTRY_IDS, OpenAIStreamBackend, AnthropicStreamBackend,
-  providerModelsUrl, parseProviderModels,
+  providerModelsUrl, parseProviderModels, deskProviderConfigured, isPlaceholderKey,
 } from '../src/adapters/streamModelBackends.ts';
 import { D1ProviderConfigStore } from '../examples/cloudflare/adapters/d1ProviderConfigStore.ts';
 
@@ -243,4 +243,36 @@ test('custom provider supports anthropic protocol end-to-end', () => {
   assert.equal(cfg?.protocol, 'anthropic');
   assert.equal(cfg?.baseUrl, 'https://gw.example.com/v1/messages');
   assert.ok(makeDeskBackend({}, 'custom:gw', [ov]) instanceof AnthropicStreamBackend);
+});
+
+// ===== 占位 key 判定(模板值不算"已配置",见简报「占位 key 陷阱」) =====
+test('isPlaceholderKey recognizes template placeholder keys', () => {
+  assert.equal(isPlaceholderKey('put-your-Anthropic-API-Key-here'), true);
+  assert.equal(isPlaceholderKey('put-a-strong-password-here'), true);
+  assert.equal(isPlaceholderKey('<your-api-key>'), true);
+  assert.equal(isPlaceholderKey('REPLACE_WITH_YOUR_KEY'), true);
+  assert.equal(isPlaceholderKey('YOUR_API_KEY'), true);
+  assert.equal(isPlaceholderKey(''), false);
+  assert.equal(isPlaceholderKey(undefined), false);
+  assert.equal(isPlaceholderKey(null), false);
+});
+
+test('isPlaceholderKey keeps real keys', () => {
+  assert.equal(isPlaceholderKey('sk-real-key-123'), false);
+  assert.equal(isPlaceholderKey('sk-891eee02d9e74e68bd091ddd73d9602c'), false);
+  assert.equal(isPlaceholderKey('ant-key'), false);
+});
+
+test('deskProviderConfigured treats placeholder key as not configured', () => {
+  const def = { id: 'anthropic', name: 'Anthropic', prefix: 'ANTHROPIC', protocol: 'anthropic' as const, defaultModels: ['claude-sonnet-4-5'] };
+  assert.equal(deskProviderConfigured({ ANTHROPIC_API_KEY: 'put-your-Anthropic-API-Key-here' }, def), false);
+  assert.equal(deskProviderConfigured({ ANTHROPIC_API_KEY: 'sk-real' }, def), true);
+  assert.equal(deskProviderConfigured({ ANTHROPIC_API_KEY: 'put-your-Anthropic-API-Key-here', ANTHROPIC_BASE_URL: 'https://gw.example.com/v1/messages' }, def), true);
+  assert.equal(deskProviderConfigured({ ANTHROPIC_BASE_URL: 'https://gw.example.com/v1/messages' }, def), true);
+});
+
+test('listProviders excludes providers whose only key is a placeholder', () => {
+  const ids = listProviders({ ANTHROPIC_API_KEY: 'put-your-Anthropic-API-Key-here' }).map((p) => p.id);
+  assert.ok(!ids.includes('anthropic'), `placeholder-only should not list anthropic, got ${ids}`);
+  assert.deepEqual(listProviders({ ANTHROPIC_API_KEY: 'put-your-Anthropic-API-Key-here', DEEPSEEK_API_KEY: 'sk-real' }).map((p) => p.id), ['deepseek']);
 });

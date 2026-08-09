@@ -35,11 +35,11 @@ import { deskDryrun } from '../../src/chat/deskAssemble';
 import { maybeFoldDeskTimeline } from '../../src/chat/deskTimeline';
 import { deskBoardRefresh } from '../../src/chat/deskBoardRefresh';
 import { handleDeskChat, type DeskChatStorage } from '../../src/chat/desk';
-import {
-  listProviders, PROVIDER_REGISTRY_IDS, DESK_PROVIDER_DEFS, deskProviderConfigured, mergeProviderEnv,
-  resolveDeskProvider, providerModelsUrl, parseProviderModels,
-  type DeskBackendEnv,
-} from '../../src/adapters/streamModelBackends';
+  import {
+    listProviders, PROVIDER_REGISTRY_IDS, DESK_PROVIDER_DEFS, deskProviderConfigured, mergeProviderEnv,
+    resolveDeskProvider, providerModelsUrl, parseProviderModels, isPlaceholderKey,
+    type DeskBackendEnv,
+  } from '../../src/adapters/streamModelBackends';
 import { D1ProviderConfigStore } from './adapters/d1ProviderConfigStore.ts';
 import type { ProviderOverride } from '../../src/core/providerConfigStore.ts';
 
@@ -215,13 +215,14 @@ function providerConfigRows(env: DeskBackendEnv, overrides: ProviderOverride[]):
     const configured = o ? true : deskProviderConfigured(merged, def);
     if (!configured) continue;
     const key = merged[`${def.prefix}_API_KEY`];
+    const realKey = key !== undefined && key !== null && !isPlaceholderKey(String(key)) ? String(key) : '';
     rows.push({
       id: def.id,
       name: def.name,
       protocol: def.protocol,
       source: o ? 'override' : 'env',
-      hasApiKey: !!key,
-      apiKeyTail: key ? String(key).slice(-4) : '',
+      hasApiKey: !!realKey,
+      apiKeyTail: realKey ? realKey.slice(-4) : '',
       baseUrl: merged[`${def.prefix}_BASE_URL`] || null,
       model: merged[`${def.prefix}_MODEL`] || null,
       maxTokens: merged[`${def.prefix}_MAX_TOKENS`] ?? null,
