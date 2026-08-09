@@ -178,8 +178,17 @@ export class OpenAIStreamBackend implements ModelBackend {
           usage.cacheRead = Number(event.usage.prompt_cache_hit_tokens) || 0;
           usage.cacheWrite = Number(event.usage.prompt_cache_miss_tokens) || 0;
         }
-        // 收到终态(finish_reason 或 [DONE])后任何后续数据行判协议异常;唯一放行是 [DONE] 前的独立 usage 末 chunk。
-        if (gotDone || finishReason) { if (!hasUsage) streamError = true; return; }
+        // 收到 [DONE] 后:usage 末 chunk 照常收账;deepseek-v4 还会在 [DONE] 之后补一条纯成本收尾
+        // (choices 空的 {"choices":[],"cost":"0"})——无内容必须容忍,否则"快写完时整轮被误判
+        // protocol 作废、内容全没"(2026-08-09 实锤)。只有 [DONE] 后又真的带 content/reasoning 才算异常。
+        if (gotDone) {
+          if (hasUsage) return;
+          const t = (Array.isArray(event.choices) ? event.choices[0]?.delta : undefined) ?? {};
+          if ((typeof t.content === 'string' && t.content) || t.reasoning_content || t.reasoning) streamError = true;
+          return;
+        }
+        // 收到 finish_reason 后、[DONE] 前,除独立 usage 末 chunk 外其余都算异常。
+        if (finishReason) { if (!hasUsage) streamError = true; return; }
         const choice = Array.isArray(event.choices) ? event.choices[0] : undefined;
         const delta = choice?.delta ?? {};
         if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) {
