@@ -955,7 +955,8 @@ async function handleDeskAdmin(request: Request, env: Env, url: URL, ctx: Execut
     return json(request, env, { success: true, models });
   }
   if (url.pathname === '/api/oc/desk/chat' && request.method === 'POST') {
-    const read = await deskReadJsonLimited(request);
+    // 附件(图片 base64)会让 body 变大,放宽到 32MB(对齐 import/chat)。
+    const read = await deskReadJsonLimited(request, { maxBytes: 32 * 1024 * 1024 });
     if ('resp' in read) return read.resp;
     const storage: DeskChatStorage = { deskStorage: new D1DeskStorage(env.OC_DB), turnStorage: new D1DeskTurnStorage(env.OC_DB), ...deskAssemblyStorage(env) };
     const overrides = await new D1ProviderConfigStore(env.OC_DB).list();

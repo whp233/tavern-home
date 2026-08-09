@@ -9,6 +9,16 @@ type Fetcher = typeof fetch;
 // 共用端点闸(流式/非流式两条链同一道):只认 https、拒绝 URL 内嵌凭据。传入值语义=完整 Messages 端点 URL。
 export function safeEndpoint(raw: string): string | null { try { const url = new URL(raw); return url.protocol === 'https:' && !url.username && !url.password ? url.toString() : null; } catch { return null; } }
 
+// 图片附件 → Anthropic Messages image 块；无图时 content 保持纯字符串（零行为变化，现有测试不破）。
+export function buildAnthropicUserContent(args: StreamChatArgs): string | Array<Record<string, unknown>> {
+  const imgs = args.images || [];
+  if (!imgs.length) return args.prompt;
+  return [
+    { type: 'text', text: args.prompt },
+    ...imgs.map((i) => ({ type: 'image', source: { type: 'base64', media_type: i.mime, data: i.data } })),
+  ];
+}
+
 export interface AnthropicBackendOptions { apiKey: string; baseUrl?: string; timeoutMs?: number; userId?: string; fetch?: Fetcher }
 
 export class AnthropicStreamBackend implements ModelBackend {
@@ -27,7 +37,7 @@ export class AnthropicStreamBackend implements ModelBackend {
       async (chunk) => { if (!chunk) return; thinking += chunk; await args.onEvent?.({ type: 'thinking', text: chunk }); }, true);
     try {
       const response = await (this.options.fetch || fetch)(endpoint, { method: 'POST', headers: { 'x-api-key': this.options.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-beta': 'extended-cache-ttl-2025-04-11', 'content-type': 'application/json' },
-        body: JSON.stringify({ ...buildModelParams(args.model), system: args.system.map((block) => block.cache ? { type: 'text', text: block.text, cache_control: { type: 'ephemeral', ttl: '1h' } } : { type: 'text', text: block.text }), messages: [{ role: 'user', content: args.prompt }], ...(this.options.userId ? { metadata: { user_id: this.options.userId } } : {}) }), signal: controller.signal });
+        body: JSON.stringify({ ...buildModelParams(args.model), system: args.system.map((block) => block.cache ? { type: 'text', text: block.text, cache_control: { type: 'ephemeral', ttl: '1h' } } : { type: 'text', text: block.text }), messages: [{ role: 'user', content: buildAnthropicUserContent(args) }], ...(this.options.userId ? { metadata: { user_id: this.options.userId } } : {}) }), signal: controller.signal });
       if (!response.ok || !response.body) return { ok: false, kind: 'http', detail: String(response.status) };
       reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
       const consume = async (line: string) => {
@@ -111,12 +121,22 @@ export function openAiEndpoint(baseUrl: string | undefined, allowHttpLocalhost =
 
 // 独立轻量参数构建:model 原样透传(或 options.model 覆盖)、max_tokens 可配、绝不带 thinking/output_config/effort。
 // cache 标志丢弃——OpenAI 协议没有 Anthropic 的 cache_control,系统消息块按纯文本拼接。
+// 图片附件 → OpenAI 兼容 image_url 块(data URL);无图时 content 保持纯字符串(零行为变化,现有测试不破)。
+export function buildOpenAiUserContent(args: StreamChatArgs): string | Array<Record<string, unknown>> {
+  const imgs = args.images || [];
+  if (!imgs.length) return args.prompt;
+  return [
+    { type: 'text', text: args.prompt },
+    ...imgs.map((i) => ({ type: 'image_url', image_url: { url: `data:${i.mime};base64,${i.data}` } })),
+  ];
+}
+
 function openAiParams(args: StreamChatArgs, options: OpenAIStreamBackendOptions): Record<string, any> {
   const body: Record<string, any> = {
     model: options.model || args.model,
     messages: [
       { role: 'system', content: args.system.map((b) => b.text).join('\n\n') },
-      { role: 'user', content: args.prompt },
+      { role: 'user', content: buildOpenAiUserContent(args) },
     ],
     stream: true,
     max_tokens: options.maxTokens ?? 8000,

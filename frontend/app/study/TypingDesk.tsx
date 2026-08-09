@@ -53,6 +53,68 @@ type FloorReport = {
   stateBoardStale?: boolean;
 };
 type FloorRole = 'user' | 'assistant';
+
+// ── 上传附件(照 ChatBox/酒馆的对话附件做法) ──
+// image:图片压缩转 base64,只当次随消息传给模型(不落库);text:txt/md/json 读成文本,后端拼进楼层(落库)。
+// ── 上传附件(照 ChatBox 的对话附件做法) ──
+// pending = 正在读取/压缩的处理中态(同行有"解析中"进度感);处理完替换成 image/text。
+// localId 前端内部用来定位替换,发送时后端 normalizeAttachments 只读 kind/mime/data/content,多余字段忽略。
+type DeskAttachmentBase = { localId: string; name: string; size: number };
+type DeskPendingAttachment = DeskAttachmentBase & { kind: 'pending' };
+type DeskImageAttachment = DeskAttachmentBase & { kind: 'image'; mime: string; data: string };
+type DeskTextAttachment = DeskAttachmentBase & { kind: 'text'; content: string };
+type DeskAttachment = DeskPendingAttachment | DeskImageAttachment | DeskTextAttachment;
+
+// 文件大小展示(ChatBox 同款:附件条显示"文件名 + 大小")
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+const IMAGE_MAX_EDGE = 1568; // 通用安全边长上限(anthropic / gpt-4o / qwen-vl 都认)
+const TEXT_ATTACHMENT_MAX = 50 * 1024; // 与后端 desk.ts 同口径
+const IMAGE_DATA_MAX = 8 * 1024 * 1024; // base64 单张上限,与后端同口径
+
+function normalizeImageMime(type: string, name: string): string {
+  const t = (type || '').toLowerCase();
+  if (t === 'image/png' || t === 'image/gif' || t === 'image/webp') return t;
+  if (/\.png$/i.test(name)) return 'image/png';
+  if (/\.gif$/i.test(name)) return 'image/gif';
+  if (/\.webp$/i.test(name)) return 'image/webp';
+  return 'image/jpeg';
+}
+
+// canvas 压缩:最长边压进 IMAGE_MAX_EDGE,质量 0.85;png(含透明)保持 png,其余转 jpeg。
+function compressImageToDataUrl(file: File, mime: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const scale = Math.min(1, IMAGE_MAX_EDGE / Math.max(img.naturalWidth, img.naturalHeight));
+        const w = Math.max(1, Math.round(img.naturalWidth * scale));
+        const h = Math.max(1, Math.round(img.naturalHeight * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error('canvas 不可用');
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL(mime === 'image/png' ? 'image/png' : 'image/jpeg', 0.85));
+      } catch (e) {
+        reject(e);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('图片读取失败'));
+    };
+    img.src = url;
+  });
+}
 type Floor = {
   key: string; // 本地渲染用(临时流式楼层用 'u'+ts/'a'+ts,落库后换成服务端真 id——同编辑部 dbId 家法)
   id?: string; // 服务端真身份;没有=还没落库(流式中/半途)
@@ -1346,6 +1408,10 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
 
   // ── composer 草稿:按窗口分槽存 localStorage ──
   const [input, setInput] = useState('');
+  // 上传附件:图片(压缩后 base64,当次随请求,不落库) / 文本(txt/md/json 内容,后端拼进楼层落库)。
+  const [attachments, setAttachments] = useState<DeskAttachment[]>([]);
+  const attachRef = useRef<HTMLInputElement>(null);
+  const [attachError, setAttachError] = useState('');
   // send()里给"这条消息是不是还是composer里当前那份"当判据的地方
   // (onUserSaved清稿/失败回填)不能读闭包里的input——那是send()被调用那一刻的旧快照,resendOrphan
   // 的truncate网络往返+send()自己的SSE往返都要等好几百毫秒,这段时间完全可能已经在composer里
@@ -1559,7 +1625,9 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
   // (读input),footer发送按钮那个调用点照旧不传参,一字不变。
   async function send(overrideMsg?: string) {
     const msg = (overrideMsg !== undefined ? overrideMsg : input).trim();
-    if (!msg || sendingRef.current || !curWindowId) return;
+    // 还在处理中的附件(pending)不参与发送——等压缩/读取完成才算数。
+    const sendable = attachments.filter((a) => a.kind !== 'pending');
+    if ((!msg && sendable.length === 0) || sendingRef.current || !curWindowId) return;
     // 被互斥矩阵拦下时明说原因(无声守卫容易被当成坏了)
     if (editingFloorKey !== null) { setDeskError('有楼层正在编辑中——先点它的「保存」或「取消」,再发送'); return; }
     if (mutRef.current > 0) { setDeskError('有改动正在保存,稍等一两秒再试'); return; }
@@ -1584,8 +1652,9 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
     setTurnKind('send');
     const userKey = 'u' + Date.now();
     const asgKey = 'a' + Date.now();
+    const displayMsg = msg || (sendable.length ? `[${sendable.length} 个附件]` : '');
     setFloors((prev) => [...prev,
-      { key: userKey, role: 'user', content: msg, variantsCount: 1, activeVariant: 0, report: {} },
+      { key: userKey, role: 'user', content: displayMsg, variantsCount: 1, activeVariant: 0, report: {} },
       { key: asgKey, role: 'assistant', content: '', thinking: '', variantsCount: 1, activeVariant: 0, report: {}, streaming: true },
     ]);
     const ac = new AbortController();
@@ -1595,7 +1664,7 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
       // 用户没显式选供应商、但已配列表非空时,默认带第一个(Web 配的渠道也可能在列)——否则走后端
       // env 兜底,全新状态(.dev.vars 没 key)会报「渠道没配」,而列表第一个明明配好了。
       const effProvider = provider || (providers.length ? providers[0].id : '');
-      const outcome = await streamChat({ window_id: windowId, message: msg, channel: 'vps', model, ...(effProvider ? { provider: effProvider } : {}) }, {
+      const outcome = await streamChat({ window_id: windowId, message: msg, channel: 'vps', model, ...(effProvider ? { provider: effProvider } : {}), ...(sendable.length ? { attachments: sendable } : {}) }, {
         onUserSaved: (id) => {
           userSaved = true;
           patchFloor(myGen, userKey, (f) => ({ ...f, id }));
@@ -1616,6 +1685,7 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
       if (abortRef.current === ac) abortRef.current = null;
 
       if ('done' in outcome) {
+        setAttachments([]); // 附件已随这轮用掉;失败时保留,方便重发
         patchFloor(myGen, asgKey, (f) => ({ ...f, id: outcome.floorId, streaming: false }));
         if (myGen === genRef.current) { setDeskError(''); loadWindow(windowId, true, myGen).catch(() => {}); }
       } else {
@@ -1663,6 +1733,46 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
       e.preventDefault();
       send();
     }
+  }
+
+  // ── 附件处理:图片压缩转 base64、文本读内容。纯文本模型选图时前端先拦一道(后端再权威兜底)。 ──
+  async function onPickAttachment(e: React.ChangeEvent<HTMLInputElement>) {
+    // ⚠️ 先拷贝再清空:e.target.files 是 live FileList,Array.from 必须在 e.target.value='' 之前完成,
+    // 否则 value 清空会连 FileList 一起清掉(这就是"选了文件却 picked files: 0"的根因)。
+    const files = e.target.files ? Array.from(e.target.files) : [];
+    e.target.value = ''; // 同名文件也能再选一次
+    console.log('[attach] picked files:', files.length);
+    if (!files.length) return;
+    setAttachError('');
+    // 逐文件:先立刻放一个"处理中"卡片(同行有解析进度感),读/压缩完替换成完成卡片;失败撤卡+红字报原因。
+    // 图片在纯文本模型下不拦——先让用户看到自己传了什么(文件名/大小),发送时后端才明确报
+    // "当前模型不支持图片"(报错点从"选文件"移到"发送",对齐 ChatBox 的体验)。
+    for (const file of Array.from(files)) {
+      const localId = `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      setAttachments((prev) => [...prev, { kind: 'pending', localId, name: file.name, size: file.size }]);
+      const drop = () => setAttachments((prev) => prev.filter((a) => a.localId !== localId));
+      try {
+        if (/\.(png|jpe?g|gif|webp)$/i.test(file.name) || file.type.startsWith('image/')) {
+          const mime = normalizeImageMime(file.type, file.name);
+          const dataUrl = await compressImageToDataUrl(file, mime);
+          const data = dataUrl.split(',')[1] || '';
+          if (!data) throw new Error('图片压缩失败');
+          if (data.length > IMAGE_DATA_MAX) { setAttachError(`「${file.name}」压缩后仍超过 8MB，挑小一点的图`); drop(); continue; }
+          setAttachments((prev) => prev.map((a) => a.localId === localId ? { kind: 'image', localId, name: file.name, mime, data, size: file.size } : a));
+        } else {
+          const text = await file.text();
+          if (!text.trim()) { setAttachError(`「${file.name}」是空文件`); drop(); continue; }
+          if (text.length > TEXT_ATTACHMENT_MAX) { setAttachError(`「${file.name}」文本超过 50KB，手动截短后再传`); drop(); continue; }
+          setAttachments((prev) => prev.map((a) => a.localId === localId ? { kind: 'text', localId, name: file.name, content: text, size: file.size } : a));
+        }
+      } catch (err: any) {
+        setAttachError(`「${file.name}」处理失败: ${err?.message || err}`);
+        drop();
+      }
+    }
+  }
+  function removeAttachment(localId: string) {
+    setAttachments((prev) => prev.filter((a) => a.localId !== localId));
   }
 
   // ── ②重roll(最后一楼的手感钮)── 续写按钮/continueWriting()/预览态已整个砍掉:
@@ -3844,6 +3954,27 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
         {/* 📖 收进章节草稿弹窗已整个拆除,不单独收一段原文进草稿箱——不留死代码。 */}
 
         <footer ref={footerRef} className="chat-inputbar flex-none z-[2] bg-page/85 backdrop-blur border-t border-line-soft px-6 pt-4 pb-5 max-[760px]:px-3.5">
+          {(attachments.length > 0 || attachError) && (
+            <div className="max-w-2xl mx-auto mb-2.5 flex flex-wrap items-center gap-2 max-h-28 overflow-y-auto">
+              {attachments.map((a) => (
+                <div key={a.localId} className="flex items-center gap-2 rounded-xl bg-card border border-line-soft px-2.5 py-1.5 text-xs text-ink-body">
+                  {a.kind === 'pending' ? (
+                    <span className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin shrink-0" />
+                  ) : a.kind === 'image' ? (
+                    <img src={`data:${a.mime};base64,${a.data}`} className="w-8 h-8 object-cover rounded shrink-0" alt={a.name} />
+                  ) : (
+                    <span className="text-sm leading-none">📄</span>
+                  )}
+                  <span className="flex flex-col leading-tight min-w-0">
+                    <span className="max-w-[160px] truncate font-medium">{a.name}</span>
+                    <span className="text-[10px] text-ink2">{a.kind === 'pending' ? '处理中…' : formatBytes(a.size)}</span>
+                  </span>
+                  <button onClick={() => removeAttachment(a.localId)} title="移除" className="serc shrink-0 text-ink2 hover:text-accent">✕</button>
+                </div>
+              ))}
+              {attachError && <div className="text-xs" style={{ color: '#c2693f' }}>{attachError}</div>}
+            </div>
+          )}
           <div className="max-w-2xl mx-auto flex items-end gap-2.5">
             <button
               onClick={doDryrun}
@@ -3910,12 +4041,27 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
                 className="w-full resize-none rounded-[20px] border border-line-soft bg-card px-[18px] min-h-12 py-3 text-ink-body leading-relaxed focus:outline-none focus:border-accent overflow-y-auto"
               />
             </div>
+            <button
+              onClick={() => attachRef.current?.click()}
+              title="上传附件(图片自动压缩,文本文件内容直接进楼层)"
+              className="serc rounded-[18px] bg-card border border-line-soft hover:brightness-[.97] text-ink-body text-sm h-12 shrink-0 flex items-center justify-center gap-1.5 px-4"
+            >
+              <span className="text-base leading-none">📁</span> 上传
+            </button>
+            <input
+              ref={attachRef}
+              type="file"
+              multiple
+              accept=".png,.jpg,.jpeg,.gif,.webp,.txt,.md,.json"
+              onChange={onPickAttachment}
+              className="hidden"
+            />
             {sending && turnKind === 'send' ? (
               <button onClick={() => abortRef.current?.abort()} className="serc rounded-[18px] bg-ink2 hover:brightness-105 text-white text-sm px-7 h-12 shrink-0 flex items-center justify-center">
                 ■ 暂停
               </button>
             ) : (
-              <button onClick={() => send()} disabled={!input.trim() || sending || mutCount > 0} className="serc rounded-[18px] bg-accent hover:brightness-105 text-white text-sm px-7 h-12 shrink-0 flex items-center justify-center disabled:opacity-40">
+              <button onClick={() => send()} disabled={(!input.trim() && attachments.filter((a) => a.kind !== 'pending').length === 0) || sending || mutCount > 0} className="serc rounded-[18px] bg-accent hover:brightness-105 text-white text-sm px-7 h-12 shrink-0 flex items-center justify-center disabled:opacity-40">
                 发送
               </button>
             )}

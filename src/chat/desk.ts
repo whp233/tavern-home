@@ -22,6 +22,7 @@ import { parseStateBoard as parseCoreStateBoard, STATEBOARD_MAX_BYTES as CORE_ST
 import type { DeskAssetStorage, DeskStorage, DeskStoryStorage, DeskTurnStorage, SemanticSearchAdapter } from '../core/storage.ts';
 import { makeDeskBackend, resolveDeskProvider } from '../adapters/streamModelBackends.ts';
 import type { ProviderOverride } from '../core/providerConfigStore.ts';
+import { isTextOnlyModel, type DeskImageAttachment } from '../core/modelBackend.ts';
 import { validateDeskChannelConfig } from '../core/deskChannelConfig.ts';
 
 interface DeskChatEnv {
@@ -67,12 +68,65 @@ interface DeskChatParams {
   provider?: string; // 多供应商 id(见 streamModelBackends.ts DESK_PROVIDER_DEFS);空/未传=老渠道自动选择
   roll?: boolean;
   continue?: boolean; // 仅识别旧客户端续写请求，收到即400拒绝
+  attachments?: unknown; // 附件数组(image/text)，形状在 normalizeAttachments 校验
 }
+
+// 文本附件：前端把 txt/md/json 读成文本随消息提交，后端拼进 user 楼层内容落库（作为上下文保留）。
+export interface DeskTextAttachment { kind: 'text'; name: string; content: string }
+export type DeskAttachment = DeskImageAttachment | DeskTextAttachment;
 
 const DESK_DEFAULT_MODEL = 'claude-sonnet-4-5'; // 工单"model default follow editorial's"——同一个值,字面量各放一份(避免循环import)
 const MESSAGE_MAX = 50000; // 同 editorial.ts message 上限口径
 // 近景回喂上限独立于折叠阈值，给后台延迟/失败保留安全重叠。
 const HISTORY_CAP = 40;
+
+// ── 附件形状校验(纯函数,便于测试) ──
+// 图片:data 是 base64、mime 白名单,只当次请求传递不落库。
+// 文本:上限 TEXT_ATTACHMENT_MAX(500KB);≤TEXT_PERSIST_MAX(50KB) 的小文件拼进楼层永久落库
+// (成为之后每轮都带的长期上下文),更大的文件仅当次传给模型、不落库——避免大文本每轮重复吃
+// token / 爆上下文,对齐 ChatBox"当次解析"的用法。
+// 上限:单图 base64 ≤8MB、单个文本 ≤500KB、每次总数 ≤8 个且 base64 总长 ≤30MB。
+const IMAGE_MIME_ALLOWED = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+const IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+const TEXT_ATTACHMENT_MAX = 500 * 1024;
+const TEXT_PERSIST_MAX = 50 * 1024;
+const ATTACHMENT_COUNT_MAX = 8;
+const ATTACHMENT_TOTAL_MAX = 30 * 1024 * 1024;
+
+export function normalizeAttachments(
+  raw: unknown,
+): { ok: true; texts: DeskTextAttachment[]; images: DeskImageAttachment[] } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, texts: [], images: [] };
+  if (!Array.isArray(raw)) return { ok: false, error: 'attachments 必须是数组' };
+  if (raw.length > ATTACHMENT_COUNT_MAX) return { ok: false, error: `一次最多 ${ATTACHMENT_COUNT_MAX} 个附件` };
+  const texts: DeskTextAttachment[] = [];
+  const images: DeskImageAttachment[] = [];
+  let totalBytes = 0;
+  for (let i = 0; i < raw.length; i++) {
+    const a: any = raw[i];
+    if (!a || typeof a !== 'object') return { ok: false, error: `第 ${i + 1} 个附件不是对象` };
+    if (a.kind === 'text') {
+      const name = String(a.name || '附件');
+      const content = typeof a.content === 'string' ? a.content : '';
+      if (!content) return { ok: false, error: `第 ${i + 1} 个附件是空文本` };
+      if (content.length > TEXT_ATTACHMENT_MAX) return { ok: false, error: `第 ${i + 1} 个附件文本太长(上限 ${TEXT_ATTACHMENT_MAX} 字)` };
+      texts.push({ kind: 'text', name, content });
+      totalBytes += content.length;
+    } else if (a.kind === 'image') {
+      const mime = typeof a.mime === 'string' ? a.mime : '';
+      if (!IMAGE_MIME_ALLOWED.has(mime)) return { ok: false, error: `第 ${i + 1} 个图片格式不支持: ${mime || '未知'}` };
+      const data = typeof a.data === 'string' ? a.data : '';
+      if (!data) return { ok: false, error: `第 ${i + 1} 个图片数据为空` };
+      if (data.length > IMAGE_MAX_BYTES) return { ok: false, error: `第 ${i + 1} 张图片太大(上限 8MB)` };
+      images.push({ kind: 'image', name: String(a.name || '图片'), mime, data });
+      totalBytes += data.length;
+    } else {
+      return { ok: false, error: `第 ${i + 1} 个附件类型不认识: ${String(a.kind)}` };
+    }
+  }
+  if (totalBytes > ATTACHMENT_TOTAL_MAX) return { ok: false, error: '附件总大小超限(30MB)' };
+  return { ok: true, texts, images };
+}
 
 const CORS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -163,8 +217,13 @@ export async function handleDeskChat(
   const roll = !!params.roll;
 
   const message = typeof params.message === 'string' ? params.message.trim() : '';
+  // 附件先归一化:message 为空但带附件(纯图片/纯文本附件)也允许发——ChatBox 支持"只发附件不发文本"。
+  const att = normalizeAttachments(params.attachments);
+  if (!att.ok) return errJson(att.error, 400);
+  const textAttachments = att.texts;
+  const imageAttachments = att.images;
   if (!roll) {
-    if (!message) return errJson('message 不能为空');
+    if (!message && textAttachments.length === 0 && imageAttachments.length === 0) return errJson('message 不能为空');
     if (message.length > MESSAGE_MAX) return errJson(`message 太长了(上限${MESSAGE_MAX}字)`);
   }
   // 渠道校验:显式 provider 时验供应商配置(不存在/没配 → 明确报错,不悄悄回落老渠道),老渠道不传
@@ -184,6 +243,11 @@ export async function handleDeskChat(
   const model = isOpenAiProvider
     ? (typeof params.model === 'string' && params.model ? params.model : DESK_DEFAULT_MODEL)
     : (params.model && MODEL_PROFILES[params.model] ? params.model : DESK_DEFAULT_MODEL);
+
+  // 纯文本模型 + 图片 → 明确报错，不悄悄吞附件（与"不悄悄回落"的渠道纪律一致）。
+  if (imageAttachments.length && isTextOnlyModel(model)) {
+    return errJson(`当前模型 ${model} 不支持图片，请切换到支持视觉的模型（qwen-vl / gpt-4o / claude 等）`, 400);
+  }
 
   // 1) 载入写作窗
   let win: any;
@@ -244,16 +308,19 @@ export async function handleDeskChat(
   let foundRollBoard = false;
 
   if (mode === 'normal') {
+    // 文本附件拼进用户消息：既落库（后续楼层组装上下文带上）、也进本楼输入（这次模型立刻看到）。
+    const attachText = textAttachments.map((t) => `[文件: ${t.name}]\n${t.content}`).join('\n\n');
+    const fullMessage = attachText ? `${message}\n\n${attachText}` : message;
     userFloorId = genId('fl');
     const now0 = new Date().toISOString();
     try {
-      await deskStorage.createFloor({ id: userFloorId, windowId, role: 'user', content: message, variants: [message], activeVariant: 0, thinking: null, report: {}, createdAt: now0 });
+      await deskStorage.createFloor({ id: userFloorId, windowId, role: 'user', content: fullMessage, variants: [fullMessage], activeVariant: 0, thinking: null, report: {}, createdAt: now0 });
     } catch (e: any) {
       return errJson(`存用户楼层失败: ${e.message}`, 500);
     }
     // afterCutoffFloors 是存这条之前查的,天然不含它——正好是"此楼之前的近景"
     assembleFloors = afterCutoffFloors.slice(-HISTORY_CAP).map((f: any) => ({ role: f.role, content: f.content }));
-    assembleInput = message;
+    assembleInput = fullMessage;
   } else if (mode === 'roll') {
     // 去掉待重roll的那条assistant自己;再往前若紧跟着一条user楼层,摘出来当input(那条assistant
     // 本来就是在回答它),没有就input留空(理论edge case:窗口首楼就是assistant,靠手改楼层造出来的)
@@ -376,7 +443,7 @@ export async function handleDeskChat(
     if (signal?.aborted) controller.abort();
     const backend = makeDeskBackend(env, provider || undefined, providerOverrides);
     let failed = false;
-    const result = await backend.streamChat({ system: systemBlocks, prompt: tail, model, signal: controller.signal, onEvent: async (event) => {
+    const result = await backend.streamChat({ system: systemBlocks, prompt: tail, model, ...(mode === 'normal' && imageAttachments.length ? { images: imageAttachments } : {}), signal: controller.signal, onEvent: async (event) => {
       if (clientGone) { controller.abort(); return; }
       if (event.type === 'text') await send({ type: 'text', text: event.text });
       else if (event.type === 'thinking') await send({ type: 'thinking', text: event.text });
