@@ -13,6 +13,8 @@ import {
   deskListPresets, deskPresetDelete, deskListRegex, deskBackfillChapterVectors,
 } from '../../src/tools/desk';
 import { parseCharacterCard } from '../../src/core/characterCard.ts';
+import { compactMemories, normalizeTheme, normalizeLayer } from '../../src/core/deskMemory.ts';
+import type { DeskMemory } from '../../src/core/types.ts';
 import {
   deskPresetBlocks, deskBlockUpdate, deskLoreList, deskLoreCreate, deskLoreUpdate, deskLoreDelete,
   deskRegexUpdate, deskRegexDelete, deskRegexReorder, deskCoreGet, deskCoreUpdate, deskRecallGet, deskRecallUpdate,
@@ -22,6 +24,7 @@ import {
   deskWindowCreate, deskWindowList, deskWindowGet, deskWindowUpdate, deskWindowDelete,
   deskFloorEdit, deskWindowTruncate, deskFloorVariant,
 } from '../../src/tools/deskWindows';
+import { deskBacktrackCreate, deskBacktrackList } from './deskBacktrackRoutes';
 import { deskBookSplit, deskBookAuto } from '../../src/tools/deskBook';
 import { studyList, studyGet, studyCreate, studyUpdate, studyDelete, studySearch, studyBackfill } from '../../src/tools/study';
 import { StudyService } from '../../src/core/studyService.ts';
@@ -34,13 +37,31 @@ import {
 import { deskDryrun } from '../../src/chat/deskAssemble';
 import { maybeFoldDeskTimeline } from '../../src/chat/deskTimeline';
 import { deskBoardRefresh } from '../../src/chat/deskBoardRefresh';
-import { handleDeskChat, type DeskChatStorage } from '../../src/chat/desk';
+import { handleDeskChat, runMemorySummarize, type DeskChatStorage } from '../../src/chat/desk';
   import {
     listProviders, PROVIDER_REGISTRY_IDS, DESK_PROVIDER_DEFS, deskProviderConfigured, mergeProviderEnv,
     resolveDeskProvider, providerModelsUrl, parseProviderModels, isPlaceholderKey,
     type DeskBackendEnv,
   } from '../../src/adapters/streamModelBackends';
 import { D1ProviderConfigStore } from './adapters/d1ProviderConfigStore.ts';
+import { D1DeskMemoryStorage } from './adapters/d1DeskMemoryStorage.ts';
+import { D1DiaryStorage } from './adapters/d1DiaryStorage.ts';
+import { diaryDates, diaryList, diaryGet, diaryCreate, diaryUpdate, diaryDelete } from '../../src/tools/diary';
+import { D1CgStorage } from './adapters/d1CgStorage.ts';
+import { cgList, cgGet, cgCreate, cgUpdate, cgDelete } from '../../src/tools/cg';
+import { stickyNotesList, stickyNotesGet, stickyNotesCreate, stickyNotesUpdate, stickyNotesDelete } from '../../src/tools/stickyNotes';
+import {
+  chapterIndexList, chapterIndexUpsert, chapterIndexDelete,
+  styleRefGet, styleRefPut, novelContextRetrieve, chapterIntegrate,
+} from '../../src/tools/chapterMemory';
+import { D1DailyLoginStore } from './adapters/d1DailyLoginStore.ts';
+import { handleTrpgRoutes } from './trpgRoutes.ts';
+import { handleSaveRoutes } from './saveRoutes.ts';
+import {
+  DEFAULT_DAILY_LOGIN_CONFIG, DEFAULT_DAILY_LOGIN_STATE,
+  dailyLoginDateKey, parseDailyLoginDateKey, evaluateDailyLogin, nextDailyLoginState,
+} from '../../src/core/loreTrigger.ts';
+import type { DailyLoginConfig } from '../../src/core/loreTrigger.ts';
 import type { ProviderOverride } from '../../src/core/providerConfigStore.ts';
 
 interface Env extends AuthEnv {
@@ -614,6 +635,375 @@ async function handleDeskAdmin(request: Request, env: Env, url: URL, ctx: Execut
     return json(request, env, r, r.success ? 200 : 400);
   }
 
+  // ----- 打字桌记忆模块（DeskMemoryStorage：记忆条目 + Compact 回退快照）-----
+  // 跨角色重构（task-10）：记忆作用域 = 项目×charKey + 分层(layer)。window_id 兼容为溯源查询。
+  const memoryStore = () => new D1DeskMemoryStorage(env.OC_DB);
+  const memId = () => `mem_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  const snapId = () => `snap_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  // 作用域解析：project 必填；char_key 缺省 ''=共享区；layer 可选。
+  const scopeOf = (query: URLSearchParams | Record<string, unknown>) => {
+    const project = (query instanceof URLSearchParams ? query.get('project') || '' : (query.project ?? '')) as string;
+    const charKey = (query instanceof URLSearchParams ? query.get('char_key') || '' : (query.char_key ?? '')) as string;
+    const layer = (query instanceof URLSearchParams ? query.get('layer') || '' : (query.layer ?? '')) as string;
+    return {
+      project: project.trim(),
+      charKey: typeof charKey === 'string' ? charKey.trim() : '',
+      layer: (layer === 'anchor' || layer === 'general' || layer === 'plot') ? (layer as 'anchor' | 'general' | 'plot') : undefined,
+    };
+  };
+  // 由 window_id 反查 project（兼容旧式单窗 API）。
+  async function projectOfWindow(windowId: string): Promise<string | null> {
+    if (!windowId) return null;
+    const w = await env.OC_DB.prepare(`SELECT project FROM desk_windows WHERE id = ?`).bind(windowId).first<any>();
+    return w ? String(w.project) : null;
+  }
+  // 顶层 GET/POST /memories
+  if (url.pathname === '/api/oc/desk/memories' && request.method === 'GET') {
+    const store = memoryStore();
+    const windowId = (url.searchParams.get('window_id') || '').trim();
+    if (windowId) {
+      // 兼容旧式：该窗溯源记忆
+      const rows = await store.listMemories(windowId);
+      return json(request, env, { success: true, memories: rows });
+    }
+    const scope = scopeOf(url.searchParams);
+    if (!scope.project) return json(request, env, { success: false, error: 'project 或 window_id 必填' }, 400);
+    const rows = await store.listByScope({ project: scope.project, charKey: scope.charKey, layer: scope.layer });
+    return json(request, env, { success: true, memories: rows, scopeName: scope.charKey ? 'char' : 'shared', charKey: scope.charKey });
+  }
+  if (url.pathname === '/api/oc/desk/memories' && request.method === 'POST') {
+    const read = await deskReadJsonLimited(request, { maxBytes: PROSE_LIMIT });
+    if ('resp' in read) return read.resp;
+    const body = read.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return json(request, env, { success: false, error: 'request body must be a JSON object' }, 400);
+    const content = typeof body.content === 'string' ? body.content.trim() : '';
+    if (!content) return json(request, env, { success: false, error: 'content 必填' }, 400);
+    const store = memoryStore();
+    const now = new Date().toISOString();
+    // 作用域：优先 project(+char_key/layer)；兼容旧 body { window_id, ... } → project 由窗反查、char_key=''。
+    let project = typeof body.project === 'string' ? body.project.trim() : '';
+    let charKey = typeof body.char_key === 'string' ? body.char_key.trim() : '';
+    const windowId = typeof body.window_id === 'string' ? body.window_id.trim() : '';
+    if (!project) {
+      if (!windowId) return json(request, env, { success: false, error: 'project 或 window_id 必填' }, 400);
+      const p = await projectOfWindow(windowId);
+      if (!p) return json(request, env, { success: false, error: '写作窗不存在' }, 404);
+      project = p;
+      if (!charKey && windowId) {
+        const w = await env.OC_DB.prepare(`SELECT char_key FROM desk_windows WHERE id = ?`).bind(windowId).first<any>();
+        charKey = w && w.char_key ? String(w.char_key) : '';
+      }
+    }
+    const memory = {
+      id: memId(),
+      windowId,
+      project,
+      charKey,
+      layer: normalizeLayer(body.layer),
+      theme: normalizeTheme(body.theme),
+      title: typeof body.title === 'string' ? body.title.trim() : '',
+      content,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await store.createMemory(memory);
+    return json(request, env, { success: true, memory }, 201);
+  }
+  if (url.pathname.startsWith('/api/oc/desk/memories/')) {
+    const rest = url.pathname.slice('/api/oc/desk/memories/'.length);
+    // 作用域盘点：列出项目内共享区 + 各角色区及其条数
+    if (rest === 'scopes' && request.method === 'GET') {
+      const project = (url.searchParams.get('project') || '').trim();
+      if (!project) return json(request, env, { success: false, error: 'project 必填' }, 400);
+      const rows = await env.OC_DB.prepare(`SELECT char_key, COUNT(*) AS c FROM desk_memories WHERE project = ? GROUP BY char_key`).bind(project).all<any>();
+      const byKey = new Map<string, number>();
+      for (const r of (rows.results || [])) byKey.set(String(r.char_key || ''), Number(r.c));
+      const scopes: Array<{ scope: 'char' | 'shared'; charKey: string; count: number }> = [];
+      scopes.push({ scope: 'shared', charKey: '', count: byKey.get('') || 0 });
+      for (const [k, v] of byKey) if (k) scopes.push({ scope: 'char', charKey: k, count: v });
+      return json(request, env, { success: true, scopes });
+    }
+    // 手动总结：角色级 / 项目级批量
+    if (rest === 'summarize' && request.method === 'POST') {
+      const read = await deskReadJsonLimited(request, { maxBytes: JSON_LIMIT, emptyBody: 'as-empty-object' });
+      if ('resp' in read) return read.resp;
+      const body = read.body && typeof read.body === 'object' && !Array.isArray(read.body) ? read.body : {};
+      const project = typeof body.project === 'string' ? body.project.trim() : '';
+      if (!project) return json(request, env, { success: false, error: 'project 必填' }, 400);
+      const charKey = typeof body.char_key === 'string' ? body.char_key.trim() : '';
+      const layer = body.layer === 'anchor' ? 'anchor' as const : undefined;
+      const windowLimit = typeof body.window_limit === 'number' ? body.window_limit : 20;
+      const overrides = await new D1ProviderConfigStore(env.OC_DB).list();
+      const provider = typeof body.provider === 'string' ? body.provider.trim() : '';
+      const storage: DeskChatStorage = { deskStorage: new D1DeskStorage(env.OC_DB), turnStorage: new D1DeskTurnStorage(env.OC_DB), ...deskAssemblyStorage(env), memory: memoryStore() };
+      const r = await runMemorySummarize(env as any, storage, { project, charKey, layer, windowLimit }, provider, overrides);
+      if ('error' in r) return json(request, env, { success: false, error: r.error }, 500);
+      return json(request, env, { success: true, ...r });
+    }
+    // 人设锚定区口（layer=anchor 专属路由；等价 GET 带 layer=anchor / POST 带 layer=anchor）
+    if (rest === 'anchors' && request.method === 'GET') {
+      const scope = scopeOf(url.searchParams);
+      if (!scope.project) return json(request, env, { success: false, error: 'project 必填' }, 400);
+      const rows = await memoryStore().listByScope({ project: scope.project, charKey: scope.charKey, layer: 'anchor' });
+      return json(request, env, { success: true, anchors: rows });
+    }
+    if (rest === 'anchors' && request.method === 'POST') {
+      const read = await deskReadJsonLimited(request, { maxBytes: PROSE_LIMIT });
+      if ('resp' in read) return read.resp;
+      const body = read.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return json(request, env, { success: false, error: 'request body must be a JSON object' }, 400);
+      const project = typeof body.project === 'string' ? body.project.trim() : '';
+      if (!project) return json(request, env, { success: false, error: 'project 必填' }, 400);
+      const content = typeof body.content === 'string' ? body.content.trim() : '';
+      if (!content) return json(request, env, { success: false, error: 'content 必填' }, 400);
+      const charKey = typeof body.char_key === 'string' ? body.char_key.trim() : '';
+      const now = new Date().toISOString();
+      await memoryStore().createMemory({ id: memId(), windowId: typeof body.window_id === 'string' ? body.window_id.trim() : '', project, charKey, layer: 'anchor', theme: normalizeTheme(body.theme), title: typeof body.title === 'string' ? body.title.trim() : '', content, createdAt: now, updatedAt: now });
+      return json(request, env, { success: true }, 201);
+    }
+    // Compact：整体压缩 + 压缩前快照（可回退）。作用域或单窗兼容。
+    if (rest === 'compact' && request.method === 'POST') {
+      const read = await deskReadJsonLimited(request, { maxBytes: JSON_LIMIT, emptyBody: 'as-empty-object' });
+      if ('resp' in read) return read.resp;
+      const body = read.body && typeof read.body === 'object' && !Array.isArray(read.body) ? read.body : {};
+      const store = memoryStore();
+      const now = new Date().toISOString();
+      const snapTitle = typeof body.title === 'string' && body.title.trim() ? body.title.trim() : `压缩 ${now}`;
+      const windowId = typeof body.window_id === 'string' ? body.window_id.trim() : '';
+      let before: DeskMemory[];
+      let scopeRef: { project: string; charKey: string };
+      if (windowId) {
+        // 兼容旧式：按窗压缩（该窗溯源记忆全部层）
+        before = await store.listMemories(windowId);
+        const p = await projectOfWindow(windowId);
+        scopeRef = { project: p || '', charKey: '' };
+      } else {
+        const scope = scopeOf(body);
+        if (!scope.project) return json(request, env, { success: false, error: 'project 或 window_id 必填' }, 400);
+        before = await store.listByScope({ project: scope.project, charKey: scope.charKey, layer: scope.layer });
+        scopeRef = { project: scope.project, charKey: scope.charKey };
+      }
+      // 快照按作用域落（含层标记）
+      await store.createSnapshot({ id: snapId(), windowId, project: scopeRef.project, charKey: scopeRef.charKey, title: snapTitle, data: before, createdAt: now });
+      const { next, removed, merged } = compactMemories(before);
+      // 既保留既有 anchor（compact 已排序前置），非 anchor 重建；锚绝不在此被删。
+      const anchors = before.filter((m) => m.layer === 'anchor');
+      const anchorIds = new Set(anchors.map((m) => m.id));
+      const nonAnchor = next.filter((m) => !anchorIds.has(m.id));
+      if (windowId) {
+        // 兼容旧式（按窗）：先清该窗全部，再逐条重建（含 anchor），无重复且锚不丢。
+        await store.truncateMemories(windowId);
+        for (const m of nonAnchor) await store.createMemory({ ...m, project: scopeRef.project, charKey: scopeRef.charKey, updatedAt: m.updatedAt || now });
+        for (const m of anchors) await store.createMemory({ ...m, updatedAt: m.updatedAt || now });
+      } else {
+        // 作用域路径：只用 replaceScope 写入一次（其内部处理 anchor 守卫），不重复 createMemory，避免主键冲突。
+        await store.replaceScope({ project: scopeRef.project, charKey: scopeRef.charKey, memories: [...anchors, ...nonAnchor] });
+      }
+      const after = windowId ? await store.listMemories(windowId) : await store.listByScope({ project: scopeRef.project, charKey: scopeRef.charKey });
+      return json(request, env, { success: true, memories: after, removed: removed.length, merged });
+    }
+    // 快照列表 / 回退
+    if (rest === 'snapshots' && request.method === 'GET') {
+      const windowId = (url.searchParams.get('window_id') || '').trim();
+      const store = memoryStore();
+      const rows = windowId
+        ? await store.listSnapshots(windowId)
+        : ((() => { const s = scopeOf(url.searchParams); return s.project ? store.listSnapshotsByScope(s.project, s.charKey) : Promise.resolve([]); })());
+      return json(request, env, {
+        success: true,
+        snapshots: (await rows).map((s) => ({ id: s.id, windowId: s.windowId, project: s.project, charKey: s.charKey, title: s.title, memoryCount: s.data.length, createdAt: s.createdAt })),
+      });
+    }
+    if (rest.startsWith('snapshots/') && rest.endsWith('/restore') && request.method === 'POST') {
+      const snapId = rest.slice('snapshots/'.length, -'/restore'.length);
+      if (!snapId) return json(request, env, { success: false, error: 'snapshot id 必填' }, 400);
+      const restored = await memoryStore().restoreSnapshot(snapId);
+      if (!restored) return json(request, env, { success: false, error: '快照不存在' }, 404);
+      return json(request, env, { success: true, memories: restored });
+    }
+    if (!rest || rest === 'compact' || rest === 'snapshots' || rest === 'scopes' || rest === 'summarize' || rest === 'anchors' || rest.endsWith('/compact') || rest.endsWith('/restore')) return json(request, env, { success: false, error: 'not_found' }, 404);
+    const id = rest;
+    if (request.method === 'PUT') {
+      const read = await deskReadJsonLimited(request, { maxBytes: PROSE_LIMIT });
+      if ('resp' in read) return read.resp;
+      const body = read.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return json(request, env, { success: false, error: 'request body must be a JSON object' }, 400);
+      const patch: any = {};
+      if (body.theme !== undefined) patch.theme = normalizeTheme(body.theme);
+      if (body.title !== undefined) patch.title = body.title;
+      if (body.content !== undefined) patch.content = body.content;
+      if (body.layer !== undefined) patch.layer = normalizeLayer(body.layer);
+      if (Object.keys(patch).length) {
+        if (patch.content !== undefined && !String(patch.content).trim()) return json(request, env, { success: false, error: 'content 不能为空' }, 400);
+        patch.updatedAt = new Date().toISOString();
+      }
+      const updated = await memoryStore().updateMemory(id, patch);
+      if (!updated) return json(request, env, { success: false, error: '记忆条目不存在' }, 404);
+      return json(request, env, { success: true, memory: updated });
+    }
+    if (request.method === 'DELETE') {
+      const ok = await memoryStore().deleteMemory(id);
+      if (!ok) return json(request, env, { success: false, error: '记忆条目不存在' }, 404);
+      return json(request, env, { success: true });
+    }
+    return json(request, env, { success: false, error: 'not_found' }, 404);
+  }
+
+
+    // ----- 日记（按日期 CRUD + 日期刻度时间线；妹居实测格式对齐，见 src/core/diaryService.ts） -----
+    if (url.pathname === '/api/oc/diary/dates' && request.method === 'GET') {
+      const r = await diaryDates(env as any, {
+        project: url.searchParams.get('project') || undefined,
+        charKey: url.searchParams.get('char_key') || undefined,
+      });
+      return json(request, env, r, r.success ? 200 : 500);
+    }
+    if (url.pathname === '/api/oc/diary' && request.method === 'GET') {
+      const r = await diaryList(env as any, {
+        date: url.searchParams.get('date') || undefined,
+        project: url.searchParams.get('project') || undefined,
+        charKey: url.searchParams.get('char_key') || undefined,
+        limit: url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined,
+      });
+      return json(request, env, r, r.success ? 200 : 500);
+    }
+    if (url.pathname === '/api/oc/diary' && request.method === 'POST') {
+      const read = await deskReadJsonLimited(request, { maxBytes: PROSE_LIMIT });
+      if ('resp' in read) return read.resp;
+      const r = await diaryCreate(env as any, read.body);
+      return json(request, env, r, r.success ? 200 : 400);
+    }
+    if (url.pathname.startsWith('/api/oc/diary/')) {
+      const id = url.pathname.slice('/api/oc/diary/'.length);
+      if (!id) return json(request, env, { success: false, error: 'missing id' }, 400);
+      if (request.method === 'GET') {
+        const r = await diaryGet(env as any, id);
+        return json(request, env, r, r.success ? 200 : 404);
+      }
+      if (request.method === 'PUT') {
+        const read = await deskReadJsonLimited(request, { maxBytes: PROSE_LIMIT });
+        if ('resp' in read) return read.resp;
+        const r = await diaryUpdate(env as any, id, read.body);
+        return json(request, env, r, r.success ? 200 : (r.error === '日记不存在' ? 404 : 400));
+      }
+      if (request.method === 'DELETE') {
+        const r = await diaryDelete(env as any, id);
+        return json(request, env, r, r.success ? 200 : (r.error === '日记不存在' ? 404 : 400));
+      }
+      return json(request, env, { success: false, error: 'not_found' }, 404);
+    }
+// ----- 自定义 CG（task-14：配置 + 按 state 解锁展示） -----
+    if (url.pathname === '/api/oc/cg' && request.method === 'GET') {
+      const r = await cgList(env as any, {
+        project: url.searchParams.get('project') || undefined,
+        charKey: url.searchParams.get('char_key') || undefined,
+        sceneKey: url.searchParams.get('scene_key') || undefined,
+        enabled: url.searchParams.get('enabled') || undefined,
+        state: url.searchParams.get('state') || undefined,
+        limit: url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined,
+      });
+      return json(request, env, r, r.success ? 200 : 400);
+    }
+    if (url.pathname === '/api/oc/cg' && request.method === 'POST') {
+      const read = await deskReadJsonLimited(request, { maxBytes: 4 * 1024 * 1024 });
+      if ('resp' in read) return read.resp;
+      const r = await cgCreate(env as any, read.body);
+      return json(request, env, r, r.success ? 200 : 400);
+    }
+    if (url.pathname.startsWith('/api/oc/cg/')) {
+      const id = url.pathname.slice('/api/oc/cg/'.length);
+      if (!id) return json(request, env, { success: false, error: 'missing id' }, 400);
+      if (request.method === 'GET') {
+        const r = await cgGet(env as any, id);
+        return json(request, env, r, r.success ? 200 : (r.error === 'CG 条目不存在' ? 404 : 400));
+      }
+      if (request.method === 'PUT') {
+        const read = await deskReadJsonLimited(request, { maxBytes: 4 * 1024 * 1024 });
+        if ('resp' in read) return read.resp;
+        const r = await cgUpdate(env as any, id, read.body);
+        return json(request, env, r, r.success ? 200 : (r.error === 'CG 条目不存在' ? 404 : 400));
+      }
+      if (request.method === 'DELETE') {
+        const r = await cgDelete(env as any, id);
+        return json(request, env, r, r.success ? 200 : (r.error === 'CG 条目不存在' ? 404 : 400));
+      }
+      return json(request, env, { success: false, error: 'not_found' }, 404);
+    }
+  // ----- 便签（task-15：独立轻量便利贴；D1 oc_state 键值持久化，零迁移） -----
+    if (url.pathname === '/api/oc/sticky-notes' && request.method === 'GET') {
+      const r = await stickyNotesList(env as any, {
+        project: url.searchParams.get('project') || undefined,
+        charKey: url.searchParams.get('char_key') || undefined,
+        pinned: url.searchParams.get('pinned') || undefined,
+        limit: url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined,
+      });
+      return json(request, env, r, r.success ? 200 : 500);
+    }
+    if (url.pathname === '/api/oc/sticky-notes' && request.method === 'POST') {
+      const read = await deskReadJsonLimited(request, { maxBytes: PROSE_LIMIT });
+      if ('resp' in read) return read.resp;
+      const r = await stickyNotesCreate(env as any, read.body);
+      return json(request, env, r, r.success ? 200 : 400);
+    }
+    if (url.pathname.startsWith('/api/oc/sticky-notes/')) {
+      const id = url.pathname.slice('/api/oc/sticky-notes/'.length);
+      if (!id) return json(request, env, { success: false, error: 'missing id' }, 400);
+      if (request.method === 'GET') {
+        const r = await stickyNotesGet(env as any, id);
+        return json(request, env, r, r.success ? 200 : (r.error === '便签不存在' ? 404 : 400));
+      }
+      if (request.method === 'PUT') {
+        const read = await deskReadJsonLimited(request, { maxBytes: PROSE_LIMIT });
+        if ('resp' in read) return read.resp;
+        const r = await stickyNotesUpdate(env as any, id, read.body);
+        return json(request, env, r, r.success ? 200 : (r.error === '便签不存在' ? 404 : 400));
+      }
+      if (request.method === 'DELETE') {
+        const r = await stickyNotesDelete(env as any, id);
+        return json(request, env, r, r.success ? 200 : (r.error === '便签不存在' ? 404 : 400));
+      }
+      return json(request, env, { success: false, error: 'not_found' }, 404);
+    }
+  // ----- 章节记忆 + 参考风格（task-18/19：oc_state 键值持久化，零迁移） -----
+    if (url.pathname === '/api/oc/desk/novel/chapter-index' && request.method === 'GET') {
+      const r = await chapterIndexList(env as any, { project: url.searchParams.get('project') || '' });
+      return json(request, env, r, r.success ? 200 : 400);
+    }
+    if (url.pathname === '/api/oc/desk/novel/chapter-index' && request.method === 'POST') {
+      const read = await deskReadJsonLimited(request, { maxBytes: PROSE_LIMIT });
+      if ('resp' in read) return read.resp;
+      const r = await chapterIndexUpsert(env as any, read.body);
+      return json(request, env, r, r.success ? 200 : 400);
+    }
+    if (url.pathname === '/api/oc/desk/novel/chapter-index' && request.method === 'DELETE') {
+      const r = await chapterIndexDelete(env as any, {
+        project: url.searchParams.get('project') || '',
+        chapter_no: url.searchParams.get('chapter_no') || '',
+      });
+      return json(request, env, r, r.success ? 200 : (r.error === '索引条目不存在' ? 404 : 400));
+    }
+    if (url.pathname === '/api/oc/desk/novel/style-ref' && request.method === 'GET') {
+      const r = await styleRefGet(env as any, { project: url.searchParams.get('project') || '' });
+      return json(request, env, r, r.success ? 200 : 400);
+    }
+    if (url.pathname === '/api/oc/desk/novel/style-ref' && request.method === 'PUT') {
+      const read = await deskReadJsonLimited(request, { maxBytes: PROSE_LIMIT });
+      if ('resp' in read) return read.resp;
+      const r = await styleRefPut(env as any, read.body);
+      return json(request, env, r, r.success ? 200 : 400);
+    }
+    if (url.pathname === '/api/oc/desk/novel/retrieve' && request.method === 'POST') {
+      const read = await deskReadJsonLimited(request, { maxBytes: JSON_LIMIT });
+      if ('resp' in read) return read.resp;
+      const r = await novelContextRetrieve(env as any, read.body);
+      return json(request, env, r, r.success ? 200 : 500);
+    }
+    if (url.pathname === '/api/oc/desk/novel/integrate' && request.method === 'POST') {
+      const read = await deskReadJsonLimited(request, { maxBytes: JSON_LIMIT });
+      if ('resp' in read) return read.resp;
+      const r = await chapterIntegrate(env as any, read.body);
+      return json(request, env, r, r.success ? 200 : 500);
+    }
   // ----- recipes (preset + overrides + regex selection bound to a project) -----
   if (url.pathname === '/api/oc/desk/recipes' && request.method === 'GET') {
     const r = await deskRecipeList(env as any);
@@ -765,6 +1155,25 @@ async function handleDeskAdmin(request: Request, env: Env, url: URL, ctx: Execut
       }
       return json(request, env, { success: false, error: 'not_found' }, 404);
     }
+// 回溯场景（task-13）：独立路由壳，主逻辑见 src/core/deskService.ts。
+      if (rest.endsWith('/backtrack')) {
+        const id = rest.slice(0, -'/backtrack'.length);
+        if (request.method === 'POST' && id) {
+          const read = await deskReadJsonLimited(request, { maxBytes: JSON_LIMIT });
+          if ('resp' in read) return read.resp;
+          const r = await deskBacktrackCreate(env as any, id, read.body);
+          return json(request, env, r, r.success ? 200 : (r.error && r.error.includes('not found') ? 404 : 400));
+        }
+        return json(request, env, { success: false, error: 'not_found' }, 404);
+      }
+      if (rest.endsWith('/branches')) {
+        const id = rest.slice(0, -'/branches'.length);
+        if (request.method === 'GET' && id) {
+          const r = await deskBacktrackList(env as any, id);
+          return json(request, env, r, r.success ? 200 : (r.error && r.error.includes('not found') ? 404 : 400));
+        }
+        return json(request, env, { success: false, error: 'not_found' }, 404);
+      }
     const id = rest;
     if (!id) return json(request, env, { success: false, error: 'missing id' }, 400);
     if (request.method === 'GET') {
@@ -955,11 +1364,77 @@ async function handleDeskAdmin(request: Request, env: Env, url: URL, ctx: Execut
     if (!models.length) return json(request, env, { success: false, error: '没拉到模型，检查 Base URL 与 Key' }, 400);
     return json(request, env, { success: true, models });
   }
+  // ----- 每日登录触发（task-17）：「每天登录弹一次」剧情机制 -----
+  // 原理：记录 lastLoginDate（oc_state 键值表），登录/启动时 today != lastLoginDate 
+  // 触发「每日首次」事件；同日不重复，跨日重置。判定/状态推进在 src/core/loreTrigger.ts 纯函数，
+  // D1 落库在 d1DailyLoginStore.ts（零 schema 变更，复用 oc_state）。
+  if (url.pathname === '/api/oc/desk/daily-login' && request.method === 'GET') {
+    const store = new D1DailyLoginStore(env.OC_DB);
+    const config = await store.getConfig();
+    const state = await store.getState();
+    return json(request, env, {
+      success: true,
+      config: config ?? DEFAULT_DAILY_LOGIN_CONFIG,
+      state: state ?? DEFAULT_DAILY_LOGIN_STATE,
+    });
+  }
+  if (url.pathname === '/api/oc/desk/daily-login/claim' && request.method === 'POST') {
+    // 登录/启动钩子：前端进书房时调一次，带本地日期（today）跨日重置按用户当地日期算，
+    // 不随 Worker 所在时区漂移。body 可选 { today: 'YYYY-MM-DD' }，缺省/非法用服务端日期。
+    const read = await deskReadJsonLimited(request, { maxBytes: DESK_TINY_BODY_MAX, emptyBody: 'as-empty-object' });
+    if ('resp' in read) return read.resp;
+    const body = read.body && typeof read.body === 'object' ? read.body : {};
+    const today = parseDailyLoginDateKey(body.today) ?? dailyLoginDateKey();
+    const store = new D1DailyLoginStore(env.OC_DB);
+    const config = await store.getConfig();
+    const state = await store.getState();
+    const cfg = config ?? DEFAULT_DAILY_LOGIN_CONFIG;
+    const st = state ?? DEFAULT_DAILY_LOGIN_STATE;
+    const verdict = evaluateDailyLogin(cfg, st, today);
+    if (verdict.shouldTrigger) {
+      await store.saveState(nextDailyLoginState(st, today));
+      return json(request, env, {
+        success: true,
+        triggered: true,
+        reason: 'ok',
+        today,
+        event: { title: cfg.title, content: cfg.content },
+        state: await store.getState(),
+      });
+    }
+    return json(request, env, { success: true, triggered: false, reason: verdict.reason, today, state: st });
+  }
+  if (url.pathname === '/api/oc/desk/daily-login/config' && request.method === 'PUT') {
+    // 可配置：开关（enabled）+ 哪天（triggerDate，空=每天）+ 剧情内容（title/content）。
+    const read = await deskReadJsonLimited(request, { maxBytes: PROSE_LIMIT });
+    if ('resp' in read) return read.resp;
+    const body = read.body && typeof read.body === 'object' ? read.body : {};
+    const store = new D1DailyLoginStore(env.OC_DB);
+    const existing = await store.getConfig();
+    const cfg: DailyLoginConfig = {
+      enabled: typeof body.enabled === 'boolean' ? body.enabled : (existing?.enabled ?? DEFAULT_DAILY_LOGIN_CONFIG.enabled),
+      title: typeof body.title === 'string' ? body.title : (existing?.title ?? DEFAULT_DAILY_LOGIN_CONFIG.title),
+      content: typeof body.content === 'string' ? body.content : (existing?.content ?? DEFAULT_DAILY_LOGIN_CONFIG.content),
+      triggerDate: typeof body.triggerDate === 'string' ? body.triggerDate : (existing?.triggerDate ?? DEFAULT_DAILY_LOGIN_CONFIG.triggerDate),
+    };
+    if (cfg.triggerDate && !parseDailyLoginDateKey(cfg.triggerDate)) {
+      return json(request, env, { success: false, error: 'triggerDate 必须是 YYYY-MM-DD 或留空' }, 400);
+    }
+    await store.saveConfig(cfg);
+    return json(request, env, { success: true, config: cfg });
+  }
+  if (url.pathname === '/api/oc/desk/daily-login/reset' && request.method === 'POST') {
+    // 管理/测试用：清空触发状态，让「每日首次」判定重新可用（等同跨日重置）。
+    await new D1DailyLoginStore(env.OC_DB).resetState();
+    return json(request, env, { success: true, state: DEFAULT_DAILY_LOGIN_STATE });
+  }
+  if (url.pathname.startsWith('/api/oc/trpg')) return handleTrpgRoutes(request, env, url);
+  if (url.pathname.startsWith('/api/oc/save')) return handleSaveRoutes(request, env, url);
   if (url.pathname === '/api/oc/desk/chat' && request.method === 'POST') {
     // 附件(图片 base64)会让 body 变大,放宽到 32MB(对齐 import/chat)。
     const read = await deskReadJsonLimited(request, { maxBytes: 32 * 1024 * 1024 });
     if ('resp' in read) return read.resp;
-    const storage: DeskChatStorage = { deskStorage: new D1DeskStorage(env.OC_DB), turnStorage: new D1DeskTurnStorage(env.OC_DB), ...deskAssemblyStorage(env) };
+    const storage: DeskChatStorage = { deskStorage: new D1DeskStorage(env.OC_DB), turnStorage: new D1DeskTurnStorage(env.OC_DB), ...deskAssemblyStorage(env), memory: new D1DeskMemoryStorage(env.OC_DB) };
     const overrides = await new D1ProviderConfigStore(env.OC_DB).list();
     return handleDeskChat(env as any, read.body, storage, request.signal, (promise) => ctx.waitUntil(promise), overrides);
   }

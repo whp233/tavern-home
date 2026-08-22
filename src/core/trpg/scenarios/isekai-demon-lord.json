@@ -1,0 +1,313 @@
+{
+  "id": "isekai-demon-lord",
+  "name": "异世界魔王讨伐",
+  "info": "你是被召唤到异世界的勇者，在体力耗尽前穿越迷雾森林、击败魔王。D20 判定 + 道具加值 + 剧情事件。",
+  "difficulty": "普通",
+  "estimatedTime": "10-15 分钟",
+  "tags": ["异世界", "魔王", "D20", "轻剧情"],
+  "paths": {
+    "config": "isekai-demon-lord.json",
+    "gmPrompt": "GM_isekai-demon-lord.json"
+  },
+  "scenario": {
+    "title": "异世界魔王讨伐",
+    "intro": "你在一阵白光中醒来，眼前的边境村庄正被魔王的阴影笼罩。村民说，只有穿过迷雾森林、通过洞窟试炼，才能抵达魔王城。",
+    "initialState": {
+      "locationId": "village",
+      "stamina": 100,
+      "time": 0,
+      "coins": 30,
+      "affection": 0,
+      "trust": 0,
+      "flags": {
+        "unlockedLocations": ["village"]
+      },
+      "items": {}
+    }
+  },
+  "locations": [
+    {
+      "id": "village",
+      "name": "边境村庄",
+      "description": "被魔王军威胁的小村庄。村民打量着你这位突然出现的勇者。",
+      "isStart": true,
+      "unlocked": true,
+      "staminaCost": 0,
+      "timeCost": 0,
+      "availableActions": [
+        {
+          "id": "inspect_village",
+          "label": "调查村庄",
+          "description": "询问村民、收集线索，运气好会得到草药。",
+          "kind": "check",
+          "difficulty": 8,
+          "staminaCost": 5,
+          "timeCost": 1,
+          "stateChanges": {
+            "addItem": { "id": "herb", "quantity": 1 },
+            "setFlag": { "key": "village_searched", "value": true }
+          }
+        },
+        {
+          "id": "rest_village",
+          "label": "休息一晚",
+          "description": "在旅店休息，恢复 20 点体力。",
+          "kind": "rest",
+          "staminaCost": 0,
+          "timeCost": 2,
+          "stateChanges": {
+            "stamina": 20
+          }
+        },
+        {
+          "id": "travel_forest",
+          "label": "前往迷雾森林",
+          "description": "向村庄外出发，进入迷雾森林。",
+          "kind": "travel",
+          "staminaCost": 10,
+          "timeCost": 2,
+          "stateChanges": {
+            "locationId": "forest",
+            "unlockLocation": "forest"
+          }
+        }
+      ]
+    },
+    {
+      "id": "forest",
+      "name": "迷雾森林",
+      "description": "浓雾弥漫的森林。传说有位贤者隐居于此，能指点勇者的道路。",
+      "unlocked": false,
+      "staminaCost": 0,
+      "timeCost": 0,
+      "availableActions": [
+        {
+          "id": "search_hermit",
+          "label": "寻找森林贤者",
+          "description": "在浓雾中寻找贤者的踪迹，可能需要慢慢摸索。",
+          "kind": "check",
+          "staminaCost": 8,
+          "timeCost": 2,
+          "keyEventId": "forest_hermit"
+        },
+        {
+          "id": "travel_cave",
+          "label": "走向洞窟",
+          "description": "拨开灌木，朝洞窟入口前进。",
+          "kind": "travel",
+          "staminaCost": 10,
+          "timeCost": 2,
+          "stateChanges": {
+            "locationId": "cave",
+            "unlockLocation": "cave"
+          }
+        },
+        {
+          "id": "rest_forest",
+          "label": "林中休息",
+          "description": "靠树干休息，恢复 10 点体力。",
+          "kind": "rest",
+          "staminaCost": 0,
+          "timeCost": 1,
+          "stateChanges": {
+            "stamina": 10
+          }
+        }
+      ]
+    },
+    {
+      "id": "cave",
+      "name": "洞窟试炼",
+      "description": "幽深的洞窟中刻着古老的铭文：唯有通过试炼者，才能得到通往魔王城的祝福。",
+      "unlocked": false,
+      "staminaCost": 0,
+      "timeCost": 0,
+      "availableActions": [
+        {
+          "id": "trial_cave",
+          "label": "接受洞窟试炼",
+          "description": "激活铭文，挑战试炼。成功会获得金币与信心。",
+          "kind": "check",
+          "staminaCost": 10,
+          "timeCost": 2,
+          "keyEventId": "cave_trial"
+        },
+        {
+          "id": "travel_throne",
+          "label": "前往魔王城",
+          "description": "穿过洞窟尽头的光门，直达魔王城前厅。",
+          "kind": "travel",
+          "staminaCost": 15,
+          "timeCost": 2,
+          "stateChanges": {
+            "locationId": "throne_room",
+            "unlockLocation": "throne_room"
+          }
+        },
+        {
+          "id": "rest_cave",
+          "label": "洞窟内扎营",
+          "description": "点燃营火休息，恢复 12 点体力。",
+          "kind": "rest",
+          "staminaCost": 0,
+          "timeCost": 2,
+          "stateChanges": {
+            "stamina": 12
+          }
+        }
+      ]
+    },
+    {
+      "id": "throne_room",
+      "name": "魔王城",
+      "description": "魔王坐在王座上，静静看着你。「终于来了，勇者。」",
+      "unlocked": false,
+      "staminaCost": 0,
+      "timeCost": 0,
+      "availableActions": [
+        {
+          "id": "attack_demon_lord",
+          "label": "向魔王发起挑战",
+          "description": "拔剑对决，这是最后的战斗。",
+          "kind": "check",
+          "staminaCost": 15,
+          "timeCost": 2,
+          "keyEventId": "demon_battle"
+        },
+        {
+          "id": "talk_demon_lord",
+          "label": "试着与魔王交谈",
+          "description": "也许魔王也有苦衷，试着用言语化解战争。",
+          "kind": "story",
+          "staminaCost": 5,
+          "timeCost": 1,
+          "stateChanges": {
+            "trust": 5
+          }
+        }
+      ]
+    }
+  ],
+  "items": [
+    {
+      "id": "herb",
+      "name": "草药",
+      "description": "散发清香的草药，使用后恢复 15 点体力。",
+      "type": "consumable",
+      "price": 10,
+      "usable": true,
+      "consumable": true,
+      "stackable": true,
+      "effect": {
+        "restoreStamina": 15
+      }
+    },
+    {
+      "id": "old_sword",
+      "name": "旧剑",
+      "description": "森林贤者赠送的旧剑，D20 判定获得 +1 加值。",
+      "type": "equipment",
+      "price": 50,
+      "usable": false,
+      "consumable": false,
+      "stackable": false,
+      "effect": {
+        "diceBonus": 1
+      }
+    }
+  ],
+  "keyEvents": [
+    {
+      "id": "forest_hermit",
+      "name": "森林贤者",
+      "requiredLocation": "forest",
+      "difficulty": 10,
+      "onSuccess": {
+        "addItem": { "id": "old_sword", "quantity": 1 },
+        "unlockLocation": "cave",
+        "setFlag": { "key": "met_hermit", "value": true }
+      },
+      "onFailure": {
+        "stamina": -5,
+        "setFlag": { "key": "met_hermit", "value": false }
+      }
+    },
+    {
+      "id": "cave_trial",
+      "name": "洞窟试炼",
+      "requiredLocation": "cave",
+      "difficulty": 12,
+      "onSuccess": {
+        "coins": 20,
+        "setFlag": { "key": "trial_passed", "value": true }
+      },
+      "onFailure": {
+        "stamina": -8,
+        "setFlag": { "key": "trial_passed", "value": false }
+      }
+    },
+    {
+      "id": "demon_battle",
+      "name": "魔王决战",
+      "requiredLocation": "throne_room",
+      "difficulty": 15,
+      "onSuccess": {
+        "coins": 50,
+        "setFlag": { "key": "defeated_demon_lord", "value": true }
+      },
+      "onFailure": {
+        "stamina": -25,
+        "setFlag": { "key": "defeated_demon_lord", "value": false }
+      }
+    }
+  ],
+  "endings": [
+    {
+      "id": "victory",
+      "name": "讨伐成功",
+      "condition": "flags.defeated_demon_lord === true",
+      "description": "魔王在你面前倒下，村庄重归和平。你的名字被吟游诗人传唱。",
+      "bonusReward": {
+        "coins": 100,
+        "affection": 20,
+        "trust": 20
+      }
+    },
+    {
+      "id": "defeat",
+      "name": "体力枯竭败退",
+      "condition": "stamina <= 0",
+      "description": "你的双腿再也撑不住，视线渐渐模糊。这次冒险以败退告终。",
+      "penaltyReward": {
+        "coins": 0,
+        "affection": -5,
+        "trust": -5
+      }
+    }
+  ],
+  "uiEvents": [
+    {
+      "event": "DICE_CRITICAL_SUCCESS",
+      "condition": "dice.critical === 'success'",
+      "component": "banner",
+      "title": "大成功！",
+      "message": "命运的骰子为你闪耀。",
+      "priority": 90
+    },
+    {
+      "event": "DICE_CRITICAL_FAILURE",
+      "condition": "dice.critical === 'failure'",
+      "component": "banner",
+      "title": "大失败",
+      "message": "命运开了一个残酷的玩笑。",
+      "priority": 90
+    },
+    {
+      "event": "ENDING_TRIGGERED",
+      "component": "banner",
+      "title": "结局",
+      "message": "本局冒险结束，结算奖励已入账。",
+      "priority": 100
+    }
+  ]
+}

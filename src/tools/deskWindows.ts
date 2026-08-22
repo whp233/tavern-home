@@ -68,6 +68,7 @@ export async function deskWindowCreate(env: DeskWindowsEnv, body: any): Promise<
   if (!project) return { success: false, error: 'project 必填' };
   if (!recipeId) return { success: false, error: 'recipe_id 必填' };
   if (body.title !== undefined && typeof body.title !== 'string') return { success: false, error: 'title 必须是字符串' };
+  if (body.char_key !== undefined && typeof body.char_key !== 'string') return { success: false, error: 'char_key 必须是字符串' };
 
   // 拍板(部署者,配方全桌通用):配方不再钉在project上,任何项目的窗口都能选任何配方——原先这里
   // "配方必须属于这个project"的校验已拆掉,只保留"配方存在"这道底线。
@@ -81,6 +82,7 @@ export async function deskWindowCreate(env: DeskWindowsEnv, body: any): Promise<
   const id = genId('dw');
   const now = new Date().toISOString();
   const title = typeof body.title === 'string' ? body.title.trim() : '';
+  const charKey = typeof body.char_key === 'string' ? body.char_key.trim() : '';
   // 前置 SELECT 只提供即时错误文案，真正不变量必须焊进写语句。
   // 不变量守卫——查完到下面真正INSERT之间有并发窗口,配方可以在这中间被 deskRecipeDelete 删掉
   // (deskRecipeDelete反过来也查"有没有窗口引用"当拒删条件,双方都在查对方此刻的状态,查完到写完
@@ -92,16 +94,16 @@ export async function deskWindowCreate(env: DeskWindowsEnv, body: any): Promise<
     // timeline_state 显式播种成 SEED_TIMELINE_STATE(不能指望列 DEFAULT '{}' 兜底)——
     // deskTimeline.ts 的 CAS 要求 blob 里一定能 json_extract 出 $.rev,见该文件头注释判断留观。
     const meta = await env.OC_DB.prepare(
-      `INSERT INTO desk_windows (id, project, title, recipe_id, note, note_depth, state_board, timeline_state, vars, created_at, updated_at)
-       SELECT ?, ?, ?, ?, '', 3, '{}', ?, '{}', ?, ? WHERE EXISTS (SELECT 1 FROM desk_recipes WHERE id = ?)`
-    ).bind(id, project, title, recipeId, JSON.stringify(SEED_TIMELINE_STATE), now, now, recipeId).run();
+      `INSERT INTO desk_windows (id, project, title, recipe_id, char_key, note, note_depth, state_board, timeline_state, vars, created_at, updated_at)
+       SELECT ?, ?, ?, ?, ?, '', 3, '{}', ?, '{}', ?, ? WHERE EXISTS (SELECT 1 FROM desk_recipes WHERE id = ?)`
+    ).bind(id, project, title, recipeId, charKey, JSON.stringify(SEED_TIMELINE_STATE), now, now, recipeId).run();
     if (!meta.meta || meta.meta.changes !== 1) {
       return { success: false, error: '配方不存在或刚被删掉' };
     }
   } catch (err: any) {
     return { success: false, error: err.message };
   }
-  return { success: true, id, project, title, recipe_id: recipeId, note: '', note_depth: 3, state_board: {}, vars: {}, created_at: now, updated_at: now };
+  return { success: true, id, project, title, recipe_id: recipeId, char_key: charKey, note: '', note_depth: 3, state_board: {}, vars: {}, created_at: now, updated_at: now };
 }
 
 // ===== GET /api/oc/desk/windows?project= =====
@@ -159,7 +161,7 @@ export async function deskWindowGet(env: DeskWindowsEnv, id: string): Promise<an
       success: true,
       window: {
         id: w.id, project: w.project, title: w.title, recipe_id: w.recipe_id,
-        note: w.note, note_depth: w.note_depth,
+        note: w.note, note_depth: w.note_depth, char_key: w.char_key || '',
         state_board: safeJsonParse(w.state_board, {}),
         timeline_state: safeJsonParse(w.timeline_state, SEED_TIMELINE_STATE),
         vars: safeJsonParse(w.vars, {}),
@@ -179,6 +181,7 @@ export async function deskWindowUpdate(env: DeskWindowsEnv, id: string, body: an
 
   if (body.title !== undefined && typeof body.title !== 'string') return { success: false, error: 'title 必须是字符串' };
   if (body.note !== undefined && typeof body.note !== 'string') return { success: false, error: 'note 必须是字符串' };
+  if (body.char_key !== undefined && typeof body.char_key !== 'string') return { success: false, error: 'char_key 必须是字符串' };
   if (body.note_depth !== undefined && (typeof body.note_depth !== 'number' || !Number.isFinite(body.note_depth) || body.note_depth < 0)) {
     return { success: false, error: 'note_depth 必须是 ≥0 的数字' };
   }
@@ -225,6 +228,7 @@ export async function deskWindowUpdate(env: DeskWindowsEnv, id: string, body: an
   const values: any[] = [];
   if (body.title !== undefined) { sets.push('title = ?'); values.push(body.title.trim()); }
   if (body.note !== undefined) { sets.push('note = ?'); values.push(body.note); }
+  if (body.char_key !== undefined) { sets.push('char_key = ?'); values.push(String(body.char_key).trim()); }
   if (body.note_depth !== undefined) { sets.push('note_depth = ?'); values.push(body.note_depth); }
   if (body.vars !== undefined) { sets.push('vars = ?'); values.push(safeJsonStringify(body.vars)); }
   if (body.recipe_id !== undefined) { sets.push('recipe_id = ?'); values.push(body.recipe_id.trim()); }

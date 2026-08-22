@@ -13,11 +13,10 @@ README 和 `docs/`（data-model.md、wiring.md）是正式文档；下面只写�
 - 全量校验：`npm run release:check`（typecheck + test + build + 发布卫生检查）；CI（`.github/workflows/ci.yml`，push/PR→main，Node 24）跑同一套
 - 本地数据库：`npm run db:init:local`（init.sql 全量建表）、`npm run db:migrate:local`（增量迁移）。**run.bat 首次只跑 init.sql**；迁移要显式跑 `db:migrate:local`，不自动应用
 
-## ⚠️ 工作树当前状态（改文件前必看，2026-08-08）
-- **AGENTS.md 本身是未跟踪文件**（`git status` 显示 `??`），还没提交。
-- **win5 正在做「打字桌上传图片附件」**，5 个源文件是未提交改动，**别碰 / 别 checkout / 别顺手提交**：
-  `examples/cloudflare/index.ts`、`frontend/app/study/TypingDesk.tsx`、`src/adapters/streamModelBackends.ts`、`src/chat/desk.ts`、`src/core/modelBackend.ts`（新增 `DeskImageAttachment` / `isTextOnlyModel`）。
-- 动手改任何共享文件前，先看团队板 `~/.agents/team/board.md` 确认当前 owner。
+## ⚠️ 工作树当前状态（改文件前必看，2026-08-09）
+- 打字桌上传附件（图片/文本）已提交（`11bd8a3`）、供应商网页配置已提交（`ee0facd`）、供应商占位 key 修复已提交（`be7cc10`）。工作树应保持干净；有改动先 `git status` 确认归属再动。
+- **远端 main 可能被 force-push 重写**（其他窗口 rebase 后推，2026-08-09 实测 `c08f9ff...d414617 forced update`）。本地 history 会与 origin 分叉：先 `git fetch`，发现分叉就 `git checkout -B main origin/main` + `git cherry-pick` 自己的提交，**不要 merge**（会带进整条旧链）。
+- 动手改任何共享文件前，先看团队板 `~/.agents/team/board.md` + `~/.agents/team/briefs/tavern-study.md` 确认当前 owner。
 
 ## run.bat 启动器 —— 改它之前必读（硬经验，2026-08-08 踩出来的）
 一键启动脚本，**必须是纯 ASCII**：
@@ -27,24 +26,26 @@ README 和 `docs/`（data-model.md、wiring.md）是正式文档；下面只写�
 
 ## 配置与密钥（全部 gitignored，run.bat 首次运行自动生成）
 - 根目录 `.dev.vars`：`AUTH_TOKEN` / `OWNER_TOKEN` / `COMPANION_TOKEN`（读书角 AI 伴侣）+ 模型供应商 key（`<PREFIX>_API_KEY` / `_BASE_URL` / `_MODEL`）。
-  **占位 key 陷阱**：模板里的 `put-your-...-here` 非空，后端会误判"已配置"。任何"无供应商"判定必须排除占位值。
+  **占位 key 陷阱**：模板里的 `put-your-...-here` 非空，过去会被误判"已配置"。已修复：`isPlaceholderKey()`（`src/adapters/streamModelBackends.ts`）过滤占位形态，`deskProviderConfigured` / `hasApiKey` / `apiKeyTail` 三处共用。**做"无供应商"判定时仍要复用这个函数，别只看非空。**
 - `COMPANION_COMMENT_WRITE` 在 `wrangler.toml [vars]`（默认 `"false"` 只读；改 `"true"` 才允许 AI 伴侣写读书角评论）。
 - `frontend/.env.local`：`NEXT_PUBLIC_WORKER_URL` + `NEXT_PUBLIC_AUTH_TOKEN`。AUTH_TOKEN 在构建时内联进前端产物，改后要重新 build。
 - `.local-db-initialized` 空标记：存在则 run.bat 跳过建库。
 - 本地 D1 在 `.wrangler/state/v3/d1/`。删掉 `.wrangler\` + `.dev.vars` + `.env.local` + `.local-db-initialized` 再跑 run.bat = 全新安装。
 - 根目录 `.tmp-*` 目录是测试垃圾，gitignored，可随手删。
-- 当前状态（2026-08-08）：D1 是**恢复后的真实数据**（win6 按备份还原：31 记忆 / 92 章 / 1025 楼 / 1 预设 / 2 配方），不是空库；恢复实例里**没有** `pk_default`（0003 播种只在全新库有，需要就手动种）。备份在 `Downloads\tavern-home-书房配置备份-20260808-202901\`（含恢复说明）。
+- 当前状态（2026-08-09）：D1 是**还原后的真实数据**（win6 按备份还原：31 记忆 / 92 章 / 1025 楼 / 1 预设 / 2 配方），不是空库；恢复实例里**没有** `pk_default`（0003 播种只在全新库有，需要就手动种）。备份在 `Downloads\tavern-home-书房配置备份-20260808-202901\`（含恢复说明）。
+- **测试全新安装流程**：把 `.wrangler\` + `.dev.vars` + `frontend\.env.local` + `.local-db-initialized` **移走**（别删，留备份），跑 `run.bat` 即全新库；测完按备份移回。`pk_default` 默认预设会自动播种（已验证），删空预设后空状态三步引导 + 一键导入可恢复。
 
 ## 架构速览
 - 后端入口：`examples/cloudflare/index.ts`。**所有路由都挂在 `/{AUTH_TOKEN}/api/oc/...` 路径 token 下**，URL 不带 token 会 401。
 - 纯函数在 `src/core/`，打字桌工具在 `src/tools/`，模型供应商适配在 `src/adapters/streamModelBackends.ts`，D1 参考实现适配在 `examples/cloudflare/adapters/`。
-- Schema：`examples/cloudflare/schema/init.sql` + `schema/migrations/0001_initial` / `0002_desk_chapter_floors` / `0003_default_preset_seed`。
+- Schema：`examples/cloudflare/schema/init.sql` + `schema/migrations/0001_initial.sql` / `0002_desk_chapter_floors.sql` / `0003_default_preset_seed.sql`。**改 init.sql 必须同步加对应迁移**：`tests/schemaContract.test.ts` 要求 init.sql 逐字节等于全部迁移拼接，只改 init.sql 会挂测试。
 - 前端全在 `frontend/app/study/`：`page.tsx`（书房首页/房间切换）、`TypingDesk.tsx`（打字桌+「商」供应商切换）、`DeskDrawers.tsx`（导入抽屉）、`ReadingCorner.tsx`（读书角）、`ChaptersStudio.tsx`（章节编辑）。
 - 数据模型：`memories`（书房笔记/世界书/角色卡）、`oc_chapters`/`oc_comments`（读书角连载）、`oc_state`（键值状态）、`desk_presets/blocks/recipes/regex/windows/floors`（打字桌资产与消息）。
 - 所有新代码走 `StorageAdapter`/`DeskStorage` 风格（`src/core/storage.ts` 定义契约），D1 只是参考方言。
 
 ## 模型供应商
 - 静态注册表 `DESK_PROVIDER_DEFS`（`src/adapters/streamModelBackends.ts`）：opencode/anthropic/deepseek/siliconflow，按 env 前缀探测。Provider 不传 = 老行为（OPENAI 渠道优先，否则 Anthropic）。
+- **"配了没配"只有一处事实源**：`deskProviderConfigured` / `resolveDeskProvider` / `listProviders` 全在 `streamModelBackends.ts`，路由和聊天分发都复用它们，别各写一套判据。占位 key 经 `isPlaceholderKey` 排除。
 - 未配置供应商时打字桌报 500「未配置」，**不悄悄回落**其他供应商（别改成静默回退）。
 - 供应商选择持久化在浏览器 `localStorage.oc_desk_provider`；`GET /api/oc/desk/providers` 拉列表。
 - Web 端运行时配置层（「商」房间 + 书架首次引导 + 自定义 Anthropic 兼容网关）已提交（ee0facd）。
@@ -55,5 +56,5 @@ README 和 `docs/`（data-model.md、wiring.md）是正式文档；下面只写�
 - 前端文案全中文，新增 UI 保持中文。
 
 ## 协作
-- 开工前读团队板：`~/.agents/team/board.md` + `~/.agents/team/briefs/tavern-study.md`。当前：win5 正在做打字桌图片附件（上面 5 个文件未提交），win6 恢复书房原配置（D1/keys/env 还原 + 重启服务）。
+- 开工前读团队板：`~/.agents/team/board.md` + `~/.agents/team/briefs/tavern-study.md`。当前无窗口在动共享文件（2026-08-09）。
 - 写团队板/简报文件必须显式 UTF-8 无 BOM（PS 默认写会变 GBK 乱码）。机器级背景看 `C:\Users\whp18\CLAUDE.md`。

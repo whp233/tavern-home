@@ -8,7 +8,12 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import HeatBg from '../HeatBg';
 import ReadingCorner from './ReadingCorner';
 import TypingDesk, { type TypingDeskHandle } from './TypingDesk';
+import DailyLoginEvent from './DailyLoginEvent';
 import ProviderConfigRoom, { type ProviderCfgRow } from './ProviderConfigRoom';
+import DiaryRoom from './DiaryRoom';
+import CustomCgRoom from './CustomCgRoom';
+import TrpgRoom from './TrpgRoom';
+import BacktrackRoom from './BacktrackRoom';
 import {
   LoreTriggerFields, DEFAULT_LORE_TRIGGER, triggerKeysFromText, triggerModeForSave,
   type LoreTriggerValue, type LorePosition, type CharacterFields,
@@ -35,7 +40,7 @@ type SearchResult = {
   chapter?: string | null; tags: string[]; created_at: string; preview: string; score?: number;
 };
 
-type View = 'shelf' | 'project' | 'detail' | 'reading' | 'desk' | 'providers';
+type View = 'shelf' | 'project' | 'detail' | 'reading' | 'desk' | 'providers' | 'diary' | 'cg' | 'backtrack' | 'trpg';
 type DetailMode = 'view' | 'edit' | 'new';
 // 读书角内部主tab(章节工坊并入读书角)——两个文件各自留一份同名类型,本仓惯例
 // (同 ProjectField 组件独立成文件那条头注释),不为这一个小 union 类型专门拉共享文件。
@@ -144,7 +149,14 @@ const RAIL_DOORS: { view: View; icon: string; label: string }[] = [
   { view: 'shelf', icon: '架', label: '书架' },
   { view: 'desk', icon: '写', label: '打字桌' },
   { view: 'reading', icon: '读', label: '读书角' },
+  { view: 'diary', icon: '记', label: '日记' },
+{ view: 'cg', icon: '图', label: 'CG' },
+  // task-13 回溯场景：独立预览入口，待合并进 TypingDesk 消息列表后移除。
+  { view: 'backtrack', icon: '↺', label: '回溯' },
+  // 待收口窗合并（task-21）：TRPG 房门
+  { view: 'trpg', icon: '骰', label: 'TRPG' },
   { view: 'providers', icon: '商', label: '供应商' },
+
 ];
 // 响应式只靠这段纯 CSS(媒体查询)判断宽窄,不用 window.innerWidth——那样首屏 SSR/hydration 值对不上
 // 客户端真实宽度,会闪一下或报 mismatch。断点取 700px(>700 才算桌面)。
@@ -425,7 +437,7 @@ export default function StudyPage() {
       try {
         const params = new URLSearchParams(window.location.search);
         const v = params.get('v');
-        if (v === 'reading' || v === 'desk' || v === 'providers') {
+        if (v === 'reading' || v === 'desk' || v === 'providers' || v === 'diary') {
           setView(v);
           if (v === 'reading') {
             const t = params.get('t');
@@ -478,7 +490,7 @@ export default function StudyPage() {
   useEffect(() => {
     if (!restored) return;
     const params = new URLSearchParams();
-    if (view === 'reading' || view === 'desk' || view === 'providers') {
+    if (view === 'reading' || view === 'desk' || view === 'providers' || view === 'diary' || view === 'cg' || view === 'backtrack' || view === 'trpg') {
       params.set('v', view);
       if (view === 'reading' && readingTab === 'chapters') {
         params.set('t', 'chapters');
@@ -687,6 +699,8 @@ export default function StudyPage() {
   return (
     <div className="sty-page" style={{ position: 'relative', boxSizing: 'border-box', background: 'var(--page-bg)', fontFamily: 'var(--font-sans)' }}>
       <style>{RAIL_CSS}</style>
+      {/* 每日登录事件（task-17）：每天首次进书房弹一次预设剧情/提醒（后端记录日期，同日不重复） */}
+      <DailyLoginEvent base={base} envOk={envOk} />
       <div
         className="sty-shell"
         style={{
@@ -873,6 +887,39 @@ export default function StudyPage() {
             envOk={envOk}
             onGoBack={() => navigate('shelf')}
             onChanged={() => setProviderCfgNonce((n) => n + 1)}
+          />
+        )}
+
+        {/* ══ 日记房门（按日期日记 CRUD + 时间线回看；task-12） ══ */}
+        {view === 'diary' && (
+          <DiaryRoom
+            base={base}
+            envOk={envOk}
+            onGoBack={() => navigate('shelf')}
+          />
+        )}
+{/* ══ 自定义 CG 房门（task-14：配置 + 解锁展示） ══ */}
+        {view === 'cg' && (
+          <CustomCgRoom
+            base={base}
+            envOk={envOk}
+            onGoBack={() => navigate('shelf')}
+          />
+        )}
+{/* ══ 回溯场景（task-13）：独立预览入口，待合并进打字桌消息列表 ══ */}
+        {view === 'backtrack' && (
+          <BacktrackRoom
+            base={base}
+            envOk={envOk}
+            onGoBack={() => navigate('shelf')}
+          />
+        )}
+        {/* 待收口窗合并（task-21）：TRPG 房门 */}
+        {view === 'trpg' && (
+          <TrpgRoom
+            base={base}
+            envOk={envOk}
+            onGoBack={() => navigate('shelf')}
           />
         )}
 
@@ -1169,3 +1216,5 @@ function EditForm({ form, setForm, projectOptions }: { form: any; setForm: (f: a
     </div>
   );
 }
+// task-15 便签补全：入口已走独立路由 /study/sticky-notes（StickyNotesRoom.tsx），左廊正式接入由收口窗口在此处补一行挂载即可。
+// task-16 存档室完整版本走独立路由 /study/save-vault，SaveVaultRoom.tsx 纯组件形式，待收口合并。

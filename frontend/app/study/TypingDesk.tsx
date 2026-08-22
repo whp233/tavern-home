@@ -23,14 +23,32 @@ import { applyDownRegex, segmentRendered, buildCardSrcDoc, DESK_CARD_MAX_HEIGHT,
 type Weight = 'light' | 'heavy';
 // project:后端list每行实际返回(deskWindows.ts SELECT带project)——这个类型此前漏声明,
 // 曾经因为这个漏差点被误判成"窗口没有project字段";项目集合effect以它为权威源,别再漏。
-type WindowListItem = { id: string; project: string; title: string; recipe_id: string; floor_count: number; updated_at: string; created_at: string };
+type WindowListItem = { id: string; project: string; title: string; recipe_id: string; floor_count: number; updated_at: string; created_at: string; char_key?: string };
 type WindowDetail = {
   id: string; project: string; title: string; recipe_id: string;
+  char_key?: string;
   note: string; note_depth: number;
   state_board: Record<string, any>; vars: Record<string, any>;
   timeline_state: { segs: { text: string; upto: string }[]; cutoff: string | null; rev: number };
   created_at: string; updated_at: string;
 };
+// ── 记忆模块（task-7 + task-10 跨角色重构）：从「按窗隔离」升级为「作用域(共享/角色)×分层×主题」。
+// 字段名照后端 DeskMemory 契约（src/core/types.ts），不许自己发明。
+// scope: charKey 非空=角色区，空串=共享区(project 级)。
+type DeskMemoryLayer = 'anchor' | 'plot' | 'general';
+type DeskMemoryItem = {
+  id: string; windowId: string;
+  project: string; charKey: string; layer: DeskMemoryLayer;
+  theme: string; title: string; content: string;
+  createdAt: string; updatedAt: string;
+};
+// Compact 回退快照（后端 snapshots 列表返回的展示形状；project/charKey 为快照作用域）。
+type DeskMemorySnapshotItem = { id: string; windowId: string; project: string; charKey: string; title: string; memoryCount: number; createdAt: string };
+// 前端「作用域→层→主题」三级分组：一层内再按主题分组。layer 中文标题由 LAYER_LABELS 映射。
+type DeskMemoryGroup = { layer: DeskMemoryLayer; theme: string; items: DeskMemoryItem[] };
+// 后端 scopes 盘点返回：shared(charKey '') 或某角色区，带条数统计。
+type DeskMemoryScope = { scope: 'char' | 'shared'; charKey: string; count?: number };
+
 type Recipe = {
   id: string; project: string; name: string; preset_id: string; weight: Weight;
   overrides: any; regex_ids: string[]; params: any; light_system: string;
@@ -169,6 +187,30 @@ const inputStyle: React.CSSProperties = {
   fontSize: 13.5, color: 'var(--ink-body)', background: 'var(--card-bg)', border: '1px solid var(--line-soft)',
   borderRadius: 12, padding: '9px 14px', fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box',
 };
+
+// 记忆条目卡片（记忆面板内复用）：标题/正文 + 编辑/删除（删除走两步确认文案切换）。
+// props: m=条目, delStage=该条目删除确认阶段(0/1), onEdit/onDelete。
+function MemoCard({ m, delStage, onEdit, onDelete }: {
+  m: DeskMemoryItem;
+  delStage: 0 | 1;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div style={{ borderRadius: 13, padding: '11px 14px', background: 'var(--scale-0)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+        <span className="serc" style={{ fontSize: 13.5, color: 'var(--ink-deep)' }}>{m.title}</span>
+        <div style={{ display: 'flex', gap: 10, flex: 'none' }}>
+          <button onClick={onEdit} className="serc" style={{ fontSize: 11, border: 'none', background: 'none', cursor: 'pointer', color: 'var(--accent)', fontFamily: 'inherit' }}>编辑</button>
+          <button onClick={onDelete} className="serc" style={{ fontSize: 11, border: 'none', background: 'none', cursor: 'pointer', fontFamily: 'inherit', color: delStage === 1 ? '#c2693f' : 'var(--ink2)' }}>
+            {delStage === 1 ? '确认删?' : '删除'}
+          </button>
+        </div>
+      </div>
+      <div style={{ fontSize: 12.5, color: 'var(--ink-body)', marginTop: 5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{m.content}</div>
+    </div>
+  );
+}
 
 function fmtWin(iso?: string): string {
   if (!iso) return '';
@@ -618,6 +660,280 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
     } catch (e: any) { setWinDelError(e.message || '删除失败'); }
   }
 
+  // ── 记忆模块（task-7 + task-10 跨角色重构）：记忆作用域升级为「项目×(共享|角色)」+ 分层(anchor/plot/general) ──
+  // 面板从「某扇窗的记忆」升级为「对一个项目打记忆库」：顶部 scope 选择器（共享区 / 该窗 char_key 对应角色区；
+  // 无 char_key 时提供「选择角色」下拉，default 共享区）。三级布局：scope → layer → theme。
+  // 后端契约见 src/core/deskMemory.ts + examples/cloudflare/index.ts 的 /api/oc/desk/memories 段。
+  const [memoryWin, setMemoryWin] = useState<string | null>(null);
+  // 当前记忆库所属项目（= 打开面板那扇窗所在的 project）。
+  const [memoProject, setMemoProject] = useState('');
+  // 当前作用域：charKey '' = 共享区；非空 = 该角色区。
+  const [memoCharKey, setMemoCharKey] = useState('');
+  // 作用域盘点列表（共享区 + 各角色区），顶部下拉用；拉不到时 fallback 手填（见设计 8.1 无 char_key 可选角色）。
+  const [memoScopes, setMemoScopes] = useState<DeskMemoryScope[]>([]);
+  const [memoScopeDraft, setMemoScopeDraft] = useState('');
+  const [memoGroups, setMemoGroups] = useState<DeskMemoryGroup[]>([]);
+  const [memoLoading, setMemoLoading] = useState(false);
+  const [memoError, setMemoError] = useState('');
+  const [memoBusy, setMemoBusy] = useState(false); // 增改删/压缩/回退/总结等写操作共用一把"忙"闸
+  const memoSeqRef = useRef(0);
+  const [memoNote, setMemoNote] = useState('');
+  // 层可收起（general 默认收起，anchor/plot 展开）；anchor 量少按设计不展示主题子标题。
+  const [memoCollapsed, setMemoCollapsed] = useState<Partial<Record<DeskMemoryLayer, boolean>>>({ general: true });
+  // 快照列表（压缩后用于回退）；面板打开时若存在快照就拉一份。
+  const [memoSnapshots, setMemoSnapshots] = useState<DeskMemorySnapshotItem[]>([]);
+  // 手动总结结果（后端返回 added/updated/dropped）。
+  const [memoSummary, setMemoSummary] = useState<{ added: number; updated: number; dropped: number } | null>(null);
+  // 新增/编辑表单：null=空闲。theme/title/content 对应 POST/PUT 契约字段；layer 也是契约字段（anchor/plot/general）。
+  const [memoForm, setMemoForm] = useState<{ id: string | null; theme: string; layer: DeskMemoryLayer; title: string; content: string } | null>(null);
+
+  // 主题集合与展示顺序（照后端 MEMORY_THEMES：固定主题优先，其余后置）
+  const MEMO_THEMES = ['用户画像', '故事情节', '角色设定', '世界观', '其他'];
+  // 层序与层中文标题（照设计 8.2：人设锚定区 / 剧情摘要区 / 通用区）。
+  const MEMO_LAYER_ORDER: DeskMemoryLayer[] = ['anchor', 'plot', 'general'];
+  const MEMO_LAYER_LABEL: Record<DeskMemoryLayer, string> = {
+    anchor: '人设锚定区', plot: '剧情摘要区', general: '通用区',
+  };
+
+  // 把 DeskMemory[] 按「层→主题」分组（层序固定 anchor→plot→general；层内固定主题优先，自定义字典序后置）。
+  function groupMemories(memories: DeskMemoryItem[]): DeskMemoryGroup[] {
+    const byLayer = new Map<DeskMemoryLayer, Map<string, DeskMemoryItem[]>>();
+    memories.forEach((m) => {
+      const layer: DeskMemoryLayer = m.layer === 'anchor' || m.layer === 'general' ? m.layer : 'plot';
+      let byTheme = byLayer.get(layer);
+      if (!byTheme) { byTheme = new Map(); byLayer.set(layer, byTheme); }
+      const t = m.theme || '其他';
+      const arr = byTheme.get(t);
+      if (arr) arr.push(m); else byTheme.set(t, [m]);
+    });
+    const orderTheme = (a: string, b: string) => {
+      const ai = MEMO_THEMES.indexOf(a), bi = MEMO_THEMES.indexOf(b);
+      if (ai === -1 && bi === -1) return a.localeCompare(b);
+      if (ai === -1) return 1;
+      if (bi === -1) return -1;
+      return ai - bi;
+    };
+    const out: DeskMemoryGroup[] = [];
+    MEMO_LAYER_ORDER.forEach((layer) => {
+      const byTheme = byLayer.get(layer);
+      if (!byTheme) return;
+      [...byTheme.keys()].sort(orderTheme).forEach((theme) => out.push({ layer, theme, items: byTheme.get(theme) || [] }));
+    });
+    return out;
+  }
+
+  // 拉一次作用域盘点（顶部下拉列共享区+各角色区）；失败降级为单角色手填。
+  async function fetchMemoScopes(project_: string) {
+    const qs = new URLSearchParams({ project: project_ });
+    try {
+      const res = await fetch(`${base}/api/oc/desk/memories/scopes?${qs.toString()}`);
+      if (!res.ok) return;
+      const d = await res.json().catch(() => null);
+      if (d && d.success === true && Array.isArray(d.scopes)) {
+        setMemoScopes(d.scopes.map((s: any) => ({
+          scope: s.scope === 'char' ? 'char' : 'shared',
+          charKey: typeof s.charKey === 'string' ? s.charKey : '',
+          count: typeof s.count === 'number' ? s.count : 0,
+        })));
+      }
+    } catch { /* scopes 拉不到就退化为手填角色下拉，不影响主体 */ }
+  }
+
+  // 打开记忆库：按 project + charKey 作用域拉记忆 + 快照（seq 闸防快慢响应错序）。
+  async function loadMemories(project_: string, charKey: string) {
+    const tok = ++memoSeqRef.current;
+    setMemoLoading(true); setMemoError(''); setMemoNote('');
+    fetchMemoScopes(project_);
+    try {
+      if (!envOk) throw new Error('环境变量没配好');
+      const qs = new URLSearchParams({ project: project_ });
+      qs.set('char_key', charKey);
+      const res = await fetch(`${base}/api/oc/desk/memories?${qs.toString()}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const d = await res.json().catch(() => null);
+      if (!d || d.success !== true) throw new Error(d?.error || '后端报错');
+      if (tok !== memoSeqRef.current) return;
+      const memories = Array.isArray(d.memories) ? (d.memories as DeskMemoryItem[]) : [];
+      setMemoGroups(groupMemories(memories));
+      if (memories.length === 0) setMemoNote(`${charKey ? `角色「${charKey}」` : '共享区'}还没有记忆~聊过几轮会自动提炼，也可以点下方「总结生成剧情摘要」。`);
+    } catch (e: any) {
+      if (tok !== memoSeqRef.current) return;
+      setMemoError(e.message || '记忆翻不出来'); setMemoGroups([]);
+    } finally {
+      if (tok === memoSeqRef.current) setMemoLoading(false);
+    }
+    // 快照列表单独拉（失败不影响记忆本体展示）
+    try {
+      const qs = new URLSearchParams({ project: project_ });
+      qs.set('char_key', charKey);
+      const sres = await fetch(`${base}/api/oc/desk/memories/snapshots?${qs.toString()}`);
+      if (sres.ok) {
+        const sd = await sres.json().catch(() => null);
+        if (sd && sd.success === true) setMemoSnapshots(Array.isArray(sd.snapshots) ? sd.snapshots : []);
+      }
+    } catch { /* 快照拉不到就隐藏回退入口 */ }
+  }
+
+  // 打开面板：从窗口卡取 project + char_key，default scope = 该窗角色（无则共享区）。
+  function openMemoryPanel(id: string) {
+    const w = windows.find((x) => x.id === id);
+    const proj = w?.project || project;
+    const ck = (w?.char_key ?? '').trim();
+    setMemoryWin(id);
+    setMemoProject(proj);
+    setMemoCharKey(ck);
+    setMemoScopes([]);
+    setMemoScopeDraft('');
+    setMemoForm(null);
+    setMemoSummary(null);
+    setMemoCollapsed({ general: true });
+    loadMemories(proj, ck);
+  }
+  function closeMemoryPanel() {
+    setMemoryWin(null); setMemoForm(null); setMemoError(''); setMemoNote(''); setMemoSummary(null);
+  }
+
+  // scope 切换：下拉/按钮选中共享区或某角色区。
+  function switchMemoScope(charKey: string) {
+    setMemoCharKey(charKey);
+    setMemoScopeDraft('');
+    setMemoSummary(null);
+    loadMemories(memoProject, charKey);
+  }
+
+  function openMemoNew() {
+    // 默认落到当前 scope 的 plot 层（设计 8.2：新建默认 plot，表单可选 layer）。
+    setMemoForm({ id: null, theme: MEMO_THEMES[0], layer: 'plot', title: '', content: '' });
+  }
+  function openMemoEdit(m: DeskMemoryItem) {
+    setMemoForm({ id: m.id, theme: m.theme, layer: m.layer === 'anchor' || m.layer === 'general' ? m.layer : 'plot', title: m.title, content: m.content });
+  }
+  function cancelMemoForm() { setMemoForm(null); }
+
+  // 新建/保存：POST(无 id, 带 project+char_key+layer) / PUT(有 id, 带 layer)
+  async function saveMemo() {
+    if (!memoryWin || !memoForm) return;
+    const title = memoForm.title.trim();
+    if (!title) { setMemoError('标题不能空着'); return; }
+    setMemoBusy(true); setMemoError('');
+    try {
+      if (!envOk) throw new Error('环境变量没配好');
+      if (memoForm.id) {
+        // PUT：按 id 改 theme/title/content/layer（作用域跟随这条记忆本身，不改）。
+        const res = await fetch(`${base}/api/oc/desk/memories/${memoForm.id}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ theme: memoForm.theme || '其他', title, content: memoForm.content, layer: memoForm.layer }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const d = await res.json().catch(() => null);
+        if (!d || d.success !== true) throw new Error(d?.error || '保存失败');
+      } else {
+        // POST：新建落到当前 scope（project + char_key），layer 由表单决定。
+        const body: any = { project: memoProject, char_key: memoCharKey, layer: memoForm.layer, theme: memoForm.theme || '其他', title, content: memoForm.content };
+        const res = await fetch(`${base}/api/oc/desk/memories`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const d = await res.json().catch(() => null);
+        if (!d || d.success !== true) throw new Error(d?.error || '保存失败');
+      }
+      setMemoForm(null);
+      await loadMemories(memoProject, memoCharKey);
+    } catch (e: any) { setMemoError(e.message || '保存失败'); }
+    finally { setMemoBusy(false); }
+  }
+
+  // 删除：双击确认（同一卡片家法,这里直接两步按钮文字切换）
+  const [memoDelStage, setMemoDelStage] = useState<Record<string, 0 | 1>>({});
+  const setTimeoutCleanupRef = useRef<number | null>(null);
+  async function deleteMemoGesture(id: string) {
+    if ((memoDelStage[id] || 0) === 0) {
+      setMemoDelStage((s) => ({ ...s, [id]: 1 }));
+      if (setTimeoutCleanupRef.current) clearTimeout(setTimeoutCleanupRef.current);
+      setTimeoutCleanupRef.current = window.setTimeout(() => setMemoDelStage((s) => ({ ...s, [id]: 0 })), 3000);
+      return;
+    }
+    await doDeleteMemo(id);
+  }
+  async function doDeleteMemo(id: string) {
+    if (!memoryWin) return;
+    setMemoBusy(true); setMemoError('');
+    try {
+      if (!envOk) throw new Error('环境变量没配好');
+      const res = await fetch(`${base}/api/oc/desk/memories/${id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const d = await res.json().catch(() => null);
+      if (!d || d.success !== true) throw new Error(d?.error || '删除失败');
+      setMemoDelStage((s) => ({ ...s, [id]: 0 }));
+      await loadMemories(memoProject, memoCharKey);
+    } catch (e: any) { setMemoError(e.message || '删除失败'); }
+    finally { setMemoBusy(false); }
+  }
+
+  // Compact 一键压缩：按作用域（project+char_key）压缩，后端先落一份快照再压缩。
+  async function runCompact() {
+    if (!memoryWin) return;
+    setMemoBusy(true); setMemoError(''); setMemoNote('');
+    try {
+      if (!envOk) throw new Error('环境变量没配好');
+      const res = await fetch(`${base}/api/oc/desk/memories/compact`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: memoProject, char_key: memoCharKey }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const d = await res.json().catch(() => null);
+      if (!d || d.success !== true) throw new Error(d?.error || '压缩失败');
+      await loadMemories(memoProject, memoCharKey);
+      const removed = typeof d.removed === 'number' ? d.removed : 0;
+      const merged = typeof d.merged === 'number' ? d.merged : 0;
+      setMemoNote(`Compaction 完成：合并 ${merged} 条、剔除 ${removed} 条` + (merged + removed === 0 ? '（本来就很精简）' : '，可回退'));
+    } catch (e: any) { setMemoError(e.message || '压缩失败'); }
+    finally { setMemoBusy(false); }
+  }
+
+  // 手动总结：POST /memories/summarize（角色/项目级，仅 plot/general；anchor 只允许新增，见设计 5.7）。
+  async function runSummarize() {
+    if (!memoryWin) return;
+    setMemoBusy(true); setMemoError(''); setMemoNote(''); setMemoSummary(null);
+    try {
+      if (!envOk) throw new Error('环境变量没配好');
+      const body: any = { project: memoProject, window_limit: 20 };
+      if (memoCharKey) body.char_key = memoCharKey;
+      const res = await fetch(`${base}/api/oc/desk/memories/summarize`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const d = await res.json().catch(() => null);
+      if (!d || d.success !== true) throw new Error(d?.error || '总结失败');
+      setMemoSummary({
+        added: typeof d.added === 'number' ? d.added : 0,
+        updated: typeof d.updated === 'number' ? d.updated : 0,
+        dropped: typeof d.dropped === 'number' ? d.dropped : 0,
+      });
+      await loadMemories(memoProject, memoCharKey);
+    } catch (e: any) { setMemoError(e.message || '总结失败'); }
+    finally { setMemoBusy(false); }
+  }
+
+  // 回退：选一个快照恢复（快照在压缩时由后端自动生成，作用于该 scope 全量）。
+  async function restoreSnapshot(snapId: string) {
+    if (!snapId) return;
+    setMemoBusy(true); setMemoError(''); setMemoNote('');
+    try {
+      if (!envOk) throw new Error('环境变量没配好');
+      const res = await fetch(`${base}/api/oc/desk/memories/snapshots/${snapId}/restore`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const d = await res.json().catch(() => null);
+      if (!d || d.success !== true) throw new Error(d?.error || '回退失败');
+      const memories = Array.isArray(d.memories) ? (d.memories as DeskMemoryItem[]) : [];
+      setMemoGroups(groupMemories(memories));
+      setMemoNote('已回退到该快照的记忆');
+    } catch (e: any) { setMemoError(e.message || '回退失败'); }
+    finally { setMemoBusy(false); }
+  }
+
   // ── 自动成书(收为章节):POST /windows/:id/book 单章循环转写(max_chapters=1),remaining>0 继续,可中途停止 ──
   const stopRef = useRef(false);
   const [bookWin, setBookWin] = useState<string | null>(null);
@@ -694,6 +1010,8 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
   const [wizRecipesError, setWizRecipesError] = useState('');
   const [wizRecipeId, setWizRecipeId] = useState('');
   const [wizTitle, setWizTitle] = useState('');
+  // 角色名(char_key,可选):新窗声明「助理扮演的角色」,同角色跨窗口聚合记忆(设计 6.2/8.3)。
+  const [wizCharKey, setWizCharKey] = useState('');
   const [wizCreating, setWizCreating] = useState(false);
   const [wizError, setWizError] = useState('');
   // 就地建配方(没有配方时自动弹出;也留个"另建一个"手动入口)
@@ -726,7 +1044,7 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
   }
   function openWizard() {
     setWizardOpen(true);
-    setWizError(''); setWizTitle(''); setWizRecipeId(''); setWizRecipes([]);
+    setWizError(''); setWizTitle(''); setWizCharKey(''); setWizRecipeId(''); setWizRecipes([]);
     setWizMiniOpen(false);
     setWizProjManual(false); setWizProjName('');
     loadWizRecipes();
@@ -777,6 +1095,8 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
       const body: any = { project, recipe_id: wizRecipeId };
       const title = wizTitle.trim();
       if (title) body.title = title;
+      const ck = wizCharKey.trim();
+      if (ck) body.char_key = ck;
       const res = await fetch(`${base}/api/oc/desk/windows`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const d = await res.json().catch(() => null);
@@ -4108,6 +4428,7 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
             }}
           />
         )}
+
       </div>
     );
   }
@@ -4183,6 +4504,17 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
                 <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
                   <span className="serc" style={{ fontSize: 15.5, color: 'var(--ink-deep)' }}>{w.title || '未命名窗口'}</span>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 'none' }}>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); openMemoryPanel(w.id); }}
+                      className="serc"
+                      title="查看/编辑这扇窗的记忆(按主题分组)"
+                      style={{
+                        fontSize: 11, flex: 'none', border: 'none', background: 'none', fontFamily: 'inherit',
+                        cursor: 'pointer', color: 'var(--accent)',
+                      }}
+                    >
+                      记忆
+                    </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); openBookModal(w.id); }}
                       className="serc"
@@ -4319,6 +4651,9 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
                     <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink2)', letterSpacing: 1.5, margin: '18px 0 8px' }}>③ 标题(可选)</div>
                     <input value={wizTitle} onChange={(e) => setWizTitle(e.target.value)} placeholder="不填就叫「未命名窗口」" style={{ ...inputStyle, marginBottom: 18 }} />
 
+                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink2)', letterSpacing: 1.5, margin: '18px 0 8px' }}>④ 角色名(可选,填了同角色跨窗聚合记忆)</div>
+                    <input value={wizCharKey} onChange={(e) => setWizCharKey(e.target.value)} placeholder="比如「她」;不填=共享区" style={{ ...inputStyle, marginBottom: 18 }} />
+
                     {wizError && <div style={{ fontSize: 13, color: '#c2693f', marginBottom: 12 }}>{wizError}</div>}
                     <button
                       onClick={createWindow}
@@ -4409,6 +4744,215 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
           </div>
         )}
 
+        {/* 记忆面板:某扇窗卡上的「记忆」打开 → 对整个 project 打记忆库(跨角色/分层/共享区)。
+             三级布局 scope → layer → theme;与 bookWin 同款居中浮窗;点外关闭(写操作 busy 时不动)。 */}
+        {memoryWin && (
+          <div className="fixed inset-0 z-30 flex items-center justify-center px-6 box-border max-[760px]:px-2.5" onClick={() => { if (!memoBusy) closeMemoryPanel(); }}>
+            <div className="absolute inset-0 backdrop-blur-sm" style={{ background: 'rgba(50,55,40,0.4)' }} />
+            <div className="relative w-full flex flex-col overflow-hidden" style={{ maxWidth: 620, maxHeight: '88vh', background: 'var(--card-bg)', borderRadius: 22, boxShadow: '0 20px 50px var(--card-shadow2)' }} onClick={(e) => e.stopPropagation()}>
+              {/* 标题行:记忆库 + 项目名 + 关闭 */}
+              <div className="flex-none flex items-center justify-between" style={{ padding: '20px 26px 12px' }}>
+                <span className="serc" style={{ fontSize: 17, fontWeight: 600, color: 'var(--ink-deep)' }}>
+                  记忆库{memoProject ? <span style={{ fontWeight: 400, color: 'var(--ink2)', marginLeft: 6 }}>（{memoProject}）</span> : null}
+                </span>
+                <button onClick={closeMemoryPanel} className="serc leading-none cursor-pointer hover:opacity-70" style={{ fontSize: 13, color: 'var(--ink2)', background: 'none', border: 'none', flex: 'none' }}>关闭</button>
+              </div>
+              {/* scope 选择器:共享区 / 该窗角色区(或从盘点下拉选角色/共享),default 共享区 */}
+              <div className="flex-none flex items-center gap-2 flex-wrap" style={{ padding: '0 26px 4px' }}>
+                <select
+                  value={memoCharKey}
+                  onChange={(e) => switchMemoScope(e.target.value)}
+                  disabled={memoBusy || memoLoading}
+                  title="记忆作用域:共享区(项目内所有角色可见)/ 某角色区(该角色跨窗口聚合)"
+                  style={{ ...inputStyle, fontSize: 12.5, padding: '6px 10px', width: 'auto', cursor: (memoBusy || memoLoading) ? 'not-allowed' : 'pointer' }}
+                >
+                  <option value="" >共享区</option>
+                  {memoScopes
+                    .filter((s) => s.scope === 'char' && s.charKey)
+                    .map((s) => <option key={s.charKey} value={s.charKey}>角色「{s.charKey}」{typeof s.count === 'number' ? `(${s.count})` : ''}</option>)}
+                </select>
+                {/* 无盘点(后端没角色区)时给一个"选择角色"手填入口,便于用户新开角色区 */}
+                <input
+                  value={memoScopeDraft}
+                  onChange={(e) => setMemoScopeDraft(e.target.value)}
+                  placeholder={memoScopes.some((s) => s.scope === 'char' && s.charKey) ? '' : '选择角色…'}
+                  style={{ ...inputStyle, fontSize: 12.5, padding: '5px 9px', width: 110, flex: 'none' }}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && memoScopeDraft.trim()) switchMemoScope(memoScopeDraft.trim()); }}
+                />
+                {memoScopeDraft.trim() && (
+                  <button
+                    className="serc"
+                    onClick={() => { const v = memoScopeDraft.trim(); if (v) switchMemoScope(v); }}
+                    style={{ ...pillStyle, flex: 'none', fontSize: 12, color: 'var(--accent)', borderColor: 'var(--accent)', padding: '4px 9px' }}
+                  >
+                    切换
+                  </button>
+                )}
+                <span className="serc" style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink2)' }}>
+                  {memoCharKey ? `角色「${memoCharKey}」` : '共享区'}
+                </span>
+              </div>
+              {/* 操作行:手动总结 / Compact / 回退 */}
+              <div className="flex-none flex items-center gap-2 flex-wrap" style={{ padding: '6px 26px 12px' }}>
+                <button
+                  className="serc"
+                  onClick={runSummarize}
+                  disabled={memoBusy || memoLoading}
+                  title="手动触发:把相关窗口最近楼层总结成剧情摘要(plot/general);人设锚 anchor 只允许新增"
+                  style={{ ...pillStyle, flex: 'none', color: 'var(--accent)', borderColor: 'var(--accent)', opacity: memoBusy || memoLoading ? 0.5 : 1 }}
+                >
+                  {memoBusy ? '总结中…' : '总结生成剧情摘要'}
+                </button>
+                {/* Compact 一键压缩:按当前作用域压缩,后端先落快照再压缩,压缩后可回退 */}
+                <button
+                  className="serc"
+                  onClick={runCompact}
+                  disabled={memoBusy || memoLoading}
+                  title="一键智能压缩:删重复、合并同类,压缩后自动落快照可回退"
+                  style={{ ...pillStyle, flex: 'none', color: 'var(--accent)', borderColor: 'var(--accent)', opacity: memoBusy || memoLoading ? 0.5 : 1 }}
+                >
+                  {memoBusy ? '处理中…' : 'Compact'}
+                </button>
+                {/* 回退:压缩时后端生成了快照,列出可选的快照做恢复 */}
+                {!memoLoading && memoSnapshots.length > 0 && (
+                  <select
+                    value=""
+                    onChange={(e) => { if (e.target.value) restoreSnapshot(e.target.value); e.target.value = ''; }}
+                    disabled={memoBusy}
+                    title="压缩时会自动存一份快照,选一份可回退到该作用域那个时刻的记忆"
+                    style={{ ...inputStyle, fontSize: 12, padding: '6px 10px', width: 'auto', cursor: memoBusy ? 'not-allowed' : 'pointer', flex: 'none' }}
+                  >
+                    <option value="" disabled>回退到…({memoSnapshots.length})</option>
+                    {memoSnapshots.map((s) => (
+                      <option key={s.id} value={s.id}>{s.title}{(s.memoryCount !== undefined ? `(${s.memoryCount}条)` : '')}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+              <div style={{ margin: '0 26px', borderTop: '1px dashed var(--dash-line)' }} />
+              <div className="flex-1 overflow-y-auto" style={{ padding: '16px 26px 26px' }}>
+                {memoNote && <div style={{ fontSize: 12.5, color: 'var(--ink2)', marginBottom: 12 }}>{memoNote}</div>}
+                {memoSummary && !memoLoading && (
+                  <div style={{ fontSize: 12.5, color: 'var(--accent)', marginBottom: 12 }}>
+                    总结完成：新增 {memoSummary.added}、更新 {memoSummary.updated}、剔除 {memoSummary.dropped}
+                  </div>
+                )}
+                {memoError && <div style={{ fontSize: 12.5, color: '#c2693f', marginBottom: 12 }}>{memoError}</div>}
+
+                {memoLoading ? (
+                  <div style={{ fontSize: 13, color: 'var(--ink2)' }}>正在翻记忆库…</div>
+                ) : memoGroups.length === 0 ? (
+                  <div style={{ fontSize: 13, color: 'var(--ink2)', padding: '10px 0 16px' }}>
+                    {memoError && memoGroups.length === 0 ? memoError : memoNote || '记忆库还是空的~聊过几轮会自动提炼。'}
+                  </div>
+                ) : (
+                  /* 三级布局 body:scope(已在顶部) → layer → theme */
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+                    {MEMO_LAYER_ORDER.map((layer) => {
+                      const layerGroups = memoGroups.filter((g) => g.layer === layer);
+                      if (layerGroups.length === 0) return null;
+                      const collapsed = !!memoCollapsed[layer];
+                      const itemsTotal = layerGroups.reduce((n, g) => n + g.items.length, 0);
+                      return (
+                        <div key={layer}>
+                          {/* 层标题(可收起;anchor 量少不展示主题子标题,直接平铺) */}
+                          <button
+                            className="serc"
+                            onClick={() => setMemoCollapsed((c) => ({ ...c, [layer]: !c[layer] }))}
+                            style={{ display: 'flex', alignItems: 'baseline', gap: 8, width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: 0, marginBottom: 8, cursor: 'pointer', fontFamily: 'inherit' }}
+                          >
+                            <span style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--ink-deep)' }}>{MEMO_LAYER_LABEL[layer]}</span>
+                            <span style={{ fontWeight: 400, color: 'var(--ink2)', fontSize: 12 }}>{itemsTotal} 条 · {collapsed ? '展开' : '收起'}</span>
+                          </button>
+                          {collapsed ? null : (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                              {layerGroups.length === 0 ? (
+                                <div style={{ fontSize: 12, color: 'var(--ink2)' }}>空</div>
+                              ) : layer === 'anchor' ? (
+                                /* 人设锚定区:量少,直接平铺(设计 8.2:主题分组子标题不展示) */
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                  {layerGroups.flatMap((g) => g.items).map((m) => (
+                                    <MemoCard key={m.id} m={m} delStage={memoDelStage[m.id] || 0} onEdit={() => openMemoEdit(m)} onDelete={() => deleteMemoGesture(m.id)} />
+                                  ))}
+                                </div>
+                              ) : (
+                                /* plot/general:按 theme 分组子标题展示 */
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                                  {layerGroups.map((g) => (
+                                    <div key={g.theme}>
+                                      <div className="serc" style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink2)', marginBottom: 6 }}>
+                                        {g.theme}<span style={{ fontWeight: 400, color: 'var(--ink2-tint)', marginLeft: 6 }}>{g.items.length} 条</span>
+                                      </div>
+                                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                        {g.items.map((m) => (
+                                          <MemoCard key={m.id} m={m} delStage={memoDelStage[m.id] || 0} onEdit={() => openMemoEdit(m)} onDelete={() => deleteMemoGesture(m.id)} />
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* 记忆表单:新建 / 编辑(带 layer 选择) */}
+                {!memoLoading && memoForm && (
+                  <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px dashed var(--dash-line)' }}>
+                    <div className="serc" style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink-deep)', marginBottom: 10 }}>
+                      {memoForm.id ? '编辑记忆' : '新建记忆'}
+                      {!memoForm.id && <span style={{ fontWeight: 400, color: 'var(--ink2)', marginLeft: 6, fontSize: 12 }}>落{`到 ${memoCharKey ? `角色「${memoCharKey}」` : '共享区'}`}</span>}
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <select
+                          value={memoForm.theme}
+                          onChange={(e) => setMemoForm((f) => f && { ...f, theme: e.target.value })}
+                          style={{ ...inputStyle, cursor: 'pointer', flex: 'none' }}
+                        >
+                          {MEMO_THEMES.map((t) => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                        <select
+                          value={memoForm.layer}
+                          onChange={(e) => setMemoForm((f) => f && { ...f, layer: (e.target.value as DeskMemoryLayer) })}
+                          title="记忆分层:人设锚 / 剧情摘要 / 通用杂项"
+                          style={{ ...inputStyle, cursor: 'pointer', flex: 'none' }}
+                        >
+                          {MEMO_LAYER_ORDER.map((l) => <option key={l} value={l}>{MEMO_LAYER_LABEL[l]}</option>)}
+                        </select>
+                      </div>
+                      <input
+                        value={memoForm.title}
+                        onChange={(e) => setMemoForm((f) => f && { ...f, title: e.target.value })}
+                        placeholder="标题(必填)"
+                        style={inputStyle}
+                      />
+                      <textarea
+                        value={memoForm.content}
+                        onChange={(e) => setMemoForm((f) => f && { ...f, content: e.target.value })}
+                        placeholder="记忆正文…"
+                        rows={4}
+                        style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }}
+                      />
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button className="serc" onClick={saveMemo} disabled={memoBusy} style={{ ...btnPrimaryStyle, opacity: memoBusy ? 0.6 : 1 }}>{memoBusy ? '保存中…' : '保存'}</button>
+                        <button className="serc" onClick={cancelMemoForm} style={pillStyle}>取消</button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {!memoLoading && !memoForm && (
+                  <button className="serc" onClick={openMemoNew} disabled={memoBusy} style={{ ...btnPrimaryStyle, marginTop: 18, opacity: memoBusy ? 0.6 : 1 }}>+ 新建记忆</button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       {/* 悬浮球：收为章节/自动成书在后台跑时的非阻塞进度入口。关掉浮窗后任务继续，
            右下角这颗球显示进度，点它随时把进度浮窗叫回来。 */}
       {(() => {

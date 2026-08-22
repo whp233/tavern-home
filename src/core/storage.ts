@@ -1,4 +1,4 @@
-import type { Chapter, ChapterComment, CommentAuthor, DeskFloor, DeskLore, DeskPromptBlock, DeskRecipe, DeskRegex, DeskWindow, StudyEntry } from './types.ts';
+import type { Chapter, ChapterComment, CommentAuthor, CustomCgEntry, DeskFloor, DeskLore, DeskMemory, DeskMemorySnapshot, DeskPromptBlock, DeskRecipe, DeskRegex, DeskWindow, DiaryEntry, MemoryLayer, StudyEntry } from './types.ts';
 
 export interface StudyListQuery {
   project?: string;
@@ -94,6 +94,55 @@ export interface DeskTurnStorage {
   }): Promise<DeskFloor | null>;
 }
 
+export interface DeskMemoryStorage {
+  // —— 既有方法（window 溯源查询，语义不变，task-7/9 兼容）——
+  listMemories(windowId: string): Promise<DeskMemory[]>;
+  getMemory(id: string): Promise<DeskMemory | null>;
+  createMemory(memory: DeskMemory): Promise<void>;
+  updateMemory(id: string, patch: Partial<Omit<DeskMemory, 'id' | 'windowId' | 'project' | 'charKey' | 'createdAt'>>): Promise<DeskMemory | null>;
+  deleteMemory(id: string): Promise<boolean>;
+  truncateMemories(windowId: string): Promise<number>;
+  // Compact 回退快照
+  listSnapshots(windowId: string): Promise<DeskMemorySnapshot[]>;
+  listSnapshotsByScope(project: string, charKey?: string): Promise<DeskMemorySnapshot[]>;
+  createSnapshot(snapshot: DeskMemorySnapshot): Promise<void>;
+  restoreSnapshot(snapshotId: string): Promise<DeskMemory[] | null>;
+
+  // —— 新增：按项目×charKey 作用域查询（跨角色重构；charKey 缺省('')=共享作用域）——
+  listByScope(opts: {
+    project: string;
+    charKey?: string;    // 缺省 '' = 共享作用域；非空 = 该角色作用域
+    layer?: MemoryLayer; // 可选层过滤
+  }): Promise<DeskMemory[]>;
+
+  // —— 新增：按作用域批量写（自动/手动蒸馏落库；anchor 守卫见实现）——
+  replaceScope(opts: {
+    project: string;
+    charKey?: string;    // 同上
+    memories: DeskMemory[];
+  }): Promise<number>;   // 返回替换条数
+}
+
+export interface DiaryStorage {
+  // 日记列表：可按日期精确筛（date 形如 "YYYY/M/D"）/ 按项目×角色筛选。
+  // 行序不做业务承诺（date 无前导零，词法序不可靠）；调用方用 diaryService.compareDiaryDesc 排序。
+  listEntries(opts: { date?: string; project?: string; charKey?: string; limit?: number }): Promise<DiaryEntry[]>;
+  // 日期刻度（时间线用）：去重日期 + 该日条数，用于日期刻度条/月份导航。
+  listDates(opts: { project?: string; charKey?: string; limit?: number }): Promise<Array<{ date: string; count: number }>>;
+  getEntry(id: string): Promise<DiaryEntry | null>;
+  createEntry(entry: DiaryEntry): Promise<void>;
+  updateEntry(id: string, patch: Partial<Omit<DiaryEntry, 'id' | 'createdAt'>>): Promise<DiaryEntry | null>;
+  deleteEntry(id: string): Promise<boolean>;
+}
+export interface CgStorage {
+  // 自定义 CG 列表：可按项目×角色×场景筛选；行序按 updated_at DESC（最新配置在前）。
+  listEntries(opts: { project?: string; charKey?: string; sceneKey?: string; enabled?: boolean; limit?: number }): Promise<CustomCgEntry[]>;
+  getEntry(id: string): Promise<CustomCgEntry | null>;
+  createEntry(entry: CustomCgEntry): Promise<void>;
+  updateEntry(id: string, patch: Partial<Omit<CustomCgEntry, 'id' | 'createdAt'>>): Promise<CustomCgEntry | null>;
+  deleteEntry(id: string): Promise<boolean>;
+}
+
 export interface StorageAdapter {
   reading: ReadingStorage;
   study: StudyStorage;
@@ -101,6 +150,12 @@ export interface StorageAdapter {
   deskAssets: DeskAssetStorage;
   deskStory: DeskStoryStorage;
   deskTurn: DeskTurnStorage;
+  // 记忆模块可选注入：缺省时对话装配跳过记忆注入与自动蒸馏（向后兼容）。
+  memory?: DeskMemoryStorage;
+  // 日记存储可选注入（task-12；本仓 D1 方言在 examples/cloudflare/adapters/d1DiaryStorage.ts）。
+  diary?: DiaryStorage;
+// 自定义 CG 存储可选注入（task-14；本仓 D1 方言在 examples/cloudflare/adapters/d1CgStorage.ts）。
+    cg?: CgStorage;
 }
 
 export interface SemanticDocument {

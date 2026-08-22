@@ -18,6 +18,16 @@ import { makeD1UsageSink } from '../storage/usageSink';
 import { extractDeskTimelineAssistantBody, renderTimelineText } from '../chat/deskTimeline';
 import { parseCoreMemory } from '../chat/deskAssemble';
 import { chapterCreate } from './reading';
+// 章节记忆（task-18）+ 参考风格（task-19）：索引/检索/风格块装配。
+import {
+  aggregateRetrieval, renderChapterIndexText, sanitizeChapterIndexEntry,
+  renderMemoriesText, RETRIEVAL_SOURCE_LABEL,
+  type ChapterIndexEntry,
+} from '../core/deskMemory.ts';
+import { renderStyleRefBlock } from '../core/deskGenerationService.ts';
+import { D1DeskChapterMemoryStore } from '../../examples/cloudflare/adapters/d1DeskChapterMemoryStorage.ts';
+import { D1DeskMemoryStorage } from '../../examples/cloudflare/adapters/d1DeskMemoryStorage.ts';
+import { D1DeskAssetStorage } from '../../examples/cloudflare/adapters/d1DeskAssetStorage.ts';
 import {
   deskBookSplitFloors, parseEnvelope, normalizeChapterTitle, groupFullyMapped, DESK_BOOK_BUDGET_DEFAULT,
   type DeskBookFloor, type DeskBookSplitOpts,
@@ -188,6 +198,28 @@ export async function deskBookGenerate(env: DeskBookEnv, windowId: string, opts:
   }
   const nextNo = maxNo + 1;
 
+  // ===== 章节记忆 + 参考风格注入素材（task-18/19）：索引/风格/记忆各读一次，检索按章组词条现算 =====
+  // 任何一环读失败都退空继续——这些是增强注入，绝不打断成书主链路。
+  const novelStore = new D1DeskChapterMemoryStore(env.OC_DB);
+  let indexEntries: ChapterIndexEntry[] = [];
+  let styleBlock = '';
+  let scopeMemories: import('../core/types.ts').DeskMemory[] = [];
+  let loreSources: Array<{ id: string; name: string; content: string }> = [];
+  try { indexEntries = await novelStore.listIndex(project); } catch { indexEntries = []; }
+  try { styleBlock = renderStyleRefBlock(await novelStore.getStyleRef(project)); } catch { styleBlock = ''; }
+  try {
+    const memCharKey = String((win as any).charKey || ((win as any).vars && (win as any).vars.char) || '');
+    const memStore = new D1DeskMemoryStorage(env.OC_DB);
+    scopeMemories = await memStore.listByScope({ project, charKey: '' });
+    if (memCharKey) scopeMemories.push(...await memStore.listByScope({ project, charKey: memCharKey }));
+  } catch { scopeMemories = []; }
+  try {
+    loreSources = (await new D1DeskAssetStorage(env.OC_DB).listLore(project))
+      .map((l) => ({ id: l.id, name: l.name, content: l.content }));
+  } catch { loreSources = []; }
+  const indexDigest = renderChapterIndexText(indexEntries, { limit: 12 });
+  const memoriesText = renderMemoriesText(scopeMemories);
+
   const floorById = new Map(floors.map((f) => [f.id, f]));
   const failed: Array<{ chapter_index: number; error: string }> = [];
   let done = 0;
@@ -217,11 +249,25 @@ export async function deskBookGenerate(env: DeskBookEnv, windowId: string, opts:
       continue;
     }
 
+    // 整合检索已有章节（task-18②）：拿本章楼层开头当查询，从 索引+记忆+世界书 三源聚合相关素材。
+    // 词条命中计分，非全文搜索；轮数上限在 aggregateRetrieval 内部兜底。
+    let relatedText = '';
+    try {
+      const retrieval = aggregateRetrieval({ query: lines.slice(0, 800), indexEntries, memories: scopeMemories, lore: loreSources });
+      relatedText = retrieval.records
+        .map((r) => `- [${RETRIEVAL_SOURCE_LABEL[r.source]}] ${r.title ? `${r.title}：` : ''}${r.text.replace(/\s*\n+\s*/g, ' ')}`)
+        .join('\n');
+    } catch { relatedText = ''; }
+
     const system = style === 'dialogue' ? SYSTEM_DIALOGUE : SYSTEM_NOVEL;
     const user =
       `【剧情核心记忆】\n${coreMemory || '(无)'}\n\n` +
+      (indexDigest ? `【前文提要·章节索引】\n${indexDigest}\n\n` : '') +
+      (relatedText ? `【相关旧章素材】\n${relatedText}\n\n` : '') +
+      (memoriesText ? `【记忆】\n${memoriesText}\n\n` : '') +
       `【时光带摘要】\n${timelineText || '(无)'}\n\n` +
       `【上一章概要】\n${prevSummary || '(无)'}\n\n` +
+      (styleBlock ? `${styleBlock}\n\n` : '') +
       `【本章楼层原文】\n<楼层原文>\n${lines}\n</楼层原文>`;
 
     // 每章一次 completeText（最坏 100s）；失败/截断/拒答不落库，记 failed 让前端续跑重试。
@@ -276,6 +322,17 @@ export async function deskBookGenerate(env: DeskBookEnv, windowId: string, opts:
       await env.OC_DB.batch(group.floor_ids.map((fid, idx) => env.OC_DB.prepare(
         `INSERT OR IGNORE INTO desk_chapter_floors (chapter_id, window_id, floor_id, seq) VALUES (?, ?, ?, ?)`
       ).bind(chapterId, windowId, fid, idx)));
+      // 章节索引落库（task-18①）：成书成功即种基础条目（章号/标题/梗概）；主题/关键事件/角色状态
+      // 留给「整合整理」流程补全并标记完成。索引失败不回滚正文——正文是正本，索引可随时重建。
+      try {
+        const seeded = sanitizeChapterIndexEntry({
+          chapterNo, title, summary, sourceChapterId: chapterId, integrated: false,
+        });
+        if (seeded) {
+          const idxR = await novelStore.upsertEntries(project, [seeded]);
+          indexEntries = idxR.entries; // 同请求后续章的检索立即能看到刚落的索引
+        }
+      } catch { /* 索引失败不挡成书 */ }
     } catch (err: any) {
       const reason = `落库失败: ${err?.message || err}`;
       console.error(`[desk-book] window ${windowId} 第${chapterNo}章 ${reason}`);

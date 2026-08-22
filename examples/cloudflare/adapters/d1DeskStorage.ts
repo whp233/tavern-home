@@ -21,6 +21,7 @@ function windowFromRow(row: any): DeskWindow {
     project: row.project || '',
     title: row.title || '',
     recipeId: row.recipe_id || '',
+    charKey: row.char_key || '',
     note: row.note || '',
     noteDepth: Number.isInteger(row.note_depth) ? row.note_depth : 3,
     stateBoard: parseObject(row.state_board),
@@ -74,10 +75,10 @@ export class D1DeskStorage implements DeskStorage {
   async createWindow(value: DeskWindow): Promise<void> {
     await this.db.prepare(
       `INSERT INTO desk_windows
-       (id, project, title, recipe_id, note, note_depth, state_board, timeline_state, vars, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, project, title, recipe_id, char_key, note, note_depth, state_board, timeline_state, vars, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
-      value.id, value.project, value.title, value.recipeId, value.note, value.noteDepth,
+      value.id, value.project, value.title, value.recipeId, value.charKey || '', value.note, value.noteDepth,
       JSON.stringify(value.stateBoard), JSON.stringify(value.timelineState), JSON.stringify(value.vars),
       value.createdAt, value.updatedAt,
     ).run();
@@ -86,7 +87,8 @@ export class D1DeskStorage implements DeskStorage {
   async updateWindow(id: string, patch: Partial<Omit<DeskWindow, 'id' | 'createdAt'>>): Promise<DeskWindow | null> {
     const columns: Array<[keyof typeof patch, string, (value: any) => unknown]> = [
       ['project', 'project', (value) => value], ['title', 'title', (value) => value],
-      ['recipeId', 'recipe_id', (value) => value], ['note', 'note', (value) => value],
+      ['recipeId', 'recipe_id', (value) => value], ['charKey', 'char_key', (value) => value],
+      ['note', 'note', (value) => value],
       ['noteDepth', 'note_depth', (value) => value], ['stateBoard', 'state_board', JSON.stringify],
       ['timelineState', 'timeline_state', JSON.stringify], ['vars', 'vars', JSON.stringify],
       ['updatedAt', 'updated_at', (value) => value],

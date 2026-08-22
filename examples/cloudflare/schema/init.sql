@@ -134,3 +134,98 @@ INSERT INTO desk_blocks (id, preset_id, identifier, name, role, content, marker,
   0, '{"injection_position":null,"injection_depth":null,"injection_order":null,"forbid_overrides":false,"system_prompt":false}',
   1, 0, 1
 );
+-- 0004_desk_memory_module.sql
+-- 打字桌记忆模块：对话中自动提炼的关键信息，按主题分组、按 desk_window 隔离，支持手动 Compact
+-- 一键压缩（智能提炼、删重复、合并同主题）+ 压缩结果可回退。
+-- desk_memories 是"当前生效"的记忆条目集合；每次手动 Compact 会先把整窗记忆集快照进
+-- desk_memory_snapshots，压缩后可随时回退到任一历史快照（data 列存 JSON 数组快照）。
+CREATE TABLE desk_memories (
+  id TEXT PRIMARY KEY,
+  window_id TEXT NOT NULL,
+  theme TEXT NOT NULL DEFAULT '其他',
+  title TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX desk_memories_window_theme ON desk_memories(window_id, theme, updated_at DESC);
+
+CREATE TABLE desk_memory_snapshots (
+  id TEXT PRIMARY KEY,
+  window_id TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  data TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX desk_memory_snapshots_window ON desk_memory_snapshots(window_id, created_at);
+-- 0005_cross_character_memory.sql
+-- 跨角色记忆重构（task-10）：将 desk_memories 的作用域从「按 desk_window 隔离」升级为
+-- 「项目 ×（角色|共享）+ 分层」，并让 desk_windows 声明所属角色。
+-- 新增列：
+--   desk_memories.project     命名空间（隔离项目，防跨项目串记忆；由来源窗口 backfill）
+--   desk_memories.char_key    角色作用域键：非空=角色作用域；空串=共享作用域（项目内所有角色可见）
+--   desk_memories.layer       分层：anchor 人设锚定区 / plot 剧情摘要区 / general 通用区（默认 plot）
+--   desk_windows.char_key     窗口声明的角色名（供同角色跨窗口聚合与聊天注入取用）
+--   desk_memory_snapshots.project / char_key  快照定位到原作用域（快照按 scope 粒度存取）
+-- 老数据归置：project = 来源窗口的 project；char_key 留 ''（默认入共享区），window_id 保留溯源。
+-- 保持既有 task-7/9 行为：window_id 仍保留并可供溯源查询。
+
+ALTER TABLE desk_memories ADD COLUMN project TEXT NOT NULL DEFAULT '';
+ALTER TABLE desk_memories ADD COLUMN char_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE desk_memories ADD COLUMN layer TEXT NOT NULL DEFAULT 'plot';
+CREATE INDEX desk_memories_scope_idx ON desk_memories(project, char_key, layer, updated_at DESC);
+
+ALTER TABLE desk_memory_snapshots ADD COLUMN project TEXT NOT NULL DEFAULT '';
+ALTER TABLE desk_memory_snapshots ADD COLUMN char_key TEXT NOT NULL DEFAULT '';
+CREATE INDEX desk_memory_snapshots_scope ON desk_memory_snapshots(project, char_key, created_at);
+
+ALTER TABLE desk_windows ADD COLUMN char_key TEXT NOT NULL DEFAULT '';
+CREATE INDEX desk_windows_char_idx ON desk_windows(project, char_key);
+
+-- 老记忆 backfill：把 window_id 溯源到的窗的 project 填进 project 列（char_key 缺省留空→共享区）。
+UPDATE desk_memories
+  SET project = (SELECT dw.project FROM desk_windows dw WHERE dw.id = desk_memories.window_id)
+  WHERE project = '';
+-- 0006_diary.sql
+-- 酒馆之家「日记」功能（task-12）：按日期组织的个人+剧情日记，持久化于 D1。
+-- 字段对齐妹居存档实测格式（date "2026/6/27" / time "下午3:35:11" / affection / content /
+-- conversationLength + diaryId），在此之上扩展关联与反向递归锚点：
+--   project            可选关联项目（命名空间，与 memories/desk_memories 同口径，空串=未指定）
+--   char_key           可选角色关联（「谁的日记」，空串=未指定）
+--   title              可选标题（默认空串）
+--   conversation_id    反向递归锚点：关联对话 id（可从日记反查剧情节点，联动 task-13/14）
+--   conversation_length 对话条数（可空）
+-- 日期列存妹居格式 "YYYY/M/D"（无前导零）；排序在工具层按年月日数值比较（见 src/tools/diary.ts）。
+CREATE TABLE diaries (
+  id TEXT PRIMARY KEY,
+  project TEXT NOT NULL DEFAULT '',
+  char_key TEXT NOT NULL DEFAULT '',
+  date TEXT NOT NULL,
+  time TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '',
+  affection INTEGER,
+  conversation_id TEXT NOT NULL DEFAULT '',
+  conversation_length INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX diaries_date_idx ON diaries(date, updated_at DESC);
+CREATE INDEX diaries_project_char_idx ON diaries(project, char_key, updated_at DESC);-- 0007_custom_cg.sql
+-- 酒馆之家「自定义 CG」（task-14）：用户可为角色/剧情配置 CG 图（data URL / URL）或占位，
+-- 并带场景键 + 状态表达式条件（对齐妹居「事件→条件→组件」的最小可落地形态）。
+CREATE TABLE custom_cg (
+  id TEXT PRIMARY KEY,
+  project TEXT NOT NULL DEFAULT '',
+  char_key TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  scene_key TEXT NOT NULL DEFAULT '',
+  condition TEXT NOT NULL DEFAULT '',
+  image_url TEXT NOT NULL DEFAULT '',
+  placeholder TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX custom_cg_project_char_idx ON custom_cg(project, char_key, enabled, updated_at DESC);
+CREATE INDEX custom_cg_scene_idx ON custom_cg(scene_key, enabled, updated_at DESC);

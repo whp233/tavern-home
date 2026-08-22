@@ -1,5 +1,5 @@
-import type { DeskAssetPack, DeskAssetStorage, DeskStorage, DeskStoryStorage, DeskTurnCommit, DeskTurnStorage, ReadingStorage, StorageAdapter, StudyListQuery, StudyStats, StudyStorage } from '../core/storage.ts';
-import type { Chapter, ChapterComment, DeskFloor, DeskLore, DeskPromptBlock, DeskRecipe, DeskRegex, DeskWindow, StudyEntry } from '../core/types.ts';
+import type { DeskAssetPack, DeskAssetStorage, DeskMemoryStorage, DeskStorage, DeskStoryStorage, DeskTurnCommit, DeskTurnStorage, ReadingStorage, StorageAdapter, StudyListQuery, StudyStats, StudyStorage } from '../core/storage.ts';
+import type { Chapter, ChapterComment, DeskFloor, DeskLore, DeskMemory, DeskMemorySnapshot, DeskPromptBlock, DeskRecipe, DeskRegex, DeskWindow, MemoryLayer, StudyEntry } from '../core/types.ts';
 
 export interface MemorySeed {
   chapters?: Chapter[];
@@ -13,6 +13,8 @@ export interface MemorySeed {
   deskBlocks?: Array<DeskPromptBlock & { presetId: string }>;
   deskLore?: Array<DeskLore & { project: string }>;
   deskState?: Record<string, string>;
+  deskMemories?: DeskMemory[];
+  deskMemorySnapshots?: DeskMemorySnapshot[];
 }
 
 export class MemoryDeskStoryStorage implements DeskStoryStorage {
@@ -185,6 +187,89 @@ export class MemoryReadingStorage implements ReadingStorage {
   }
 }
 
+const memOrder = (a: DeskMemory, b: DeskMemory) => a.updatedAt.localeCompare(b.updatedAt) || a.id.localeCompare(b.id);
+
+export class MemoryDeskMemoryStorage implements DeskMemoryStorage {
+  readonly memories = new Map<string, DeskMemory>();
+  readonly snapshots = new Map<string, DeskMemorySnapshot>();
+
+  constructor(seed: Pick<MemorySeed, 'deskMemories' | 'deskMemorySnapshots'> = {}) {
+    for (const row of seed.deskMemories || []) this.memories.set(row.id, structuredClone(row));
+    for (const row of seed.deskMemorySnapshots || []) this.snapshots.set(row.id, structuredClone(row));
+  }
+  async listMemories(windowId: string) { return [...this.memories.values()].filter((m) => m.windowId === windowId).sort(memOrder).map((m) => structuredClone(m)); }
+  async listByScope(opts: { project: string; charKey?: string; layer?: MemoryLayer }) {
+    const project = opts.project || '';
+    const charKey = opts.charKey || '';
+    return [...this.memories.values()]
+      .filter((m) => m.project === project && m.charKey === charKey && (!opts.layer || m.layer === opts.layer))
+      .sort(memOrder)
+      .map((m) => structuredClone(m));
+  }
+  async getMemory(id: string) { const row = this.memories.get(id); return row ? structuredClone(row) : null; }
+  async createMemory(row: DeskMemory) { if (this.memories.has(row.id)) throw new Error('duplicate memory'); this.memories.set(row.id, structuredClone(row)); }
+  async replaceScope(opts: { project: string; charKey?: string; memories: DeskMemory[] }) {
+    const project = opts.project || '';
+    const charKey = opts.charKey || '';
+    const now = new Date().toISOString();
+    // anchor 守卫：先删该 scope 所有非 anchor 行；再对入场行按规则写入——
+    //   非 anchor：INSERT OR REPLACE；anchor：已存在（同 scope 同 title）则跳过（不覆盖锚）。
+    for (const [id, m] of this.memories) {
+      if (m.project === project && m.charKey === charKey && m.layer !== 'anchor') this.memories.delete(id);
+    }
+    for (const inc of opts.memories || []) {
+      if (inc.layer === 'anchor') {
+        const exists = [...this.memories.values()].some((m) => m.project === project && m.charKey === charKey && m.layer === 'anchor' && m.title && m.title === inc.title);
+        if (exists) continue;
+      }
+      const row: DeskMemory = {
+        id: inc.id || `mem_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+        windowId: inc.windowId || '',
+        project,
+        charKey,
+        layer: inc.layer || 'plot',
+        theme: inc.theme || '其他',
+        title: inc.title || '',
+        content: inc.content,
+        createdAt: inc.createdAt || now,
+        updatedAt: inc.updatedAt || now,
+      };
+      this.memories.set(row.id, structuredClone(row));
+    }
+    return (opts.memories || []).length;
+  }
+  async updateMemory(id: string, patch: Partial<Omit<DeskMemory, 'id' | 'windowId' | 'project' | 'charKey' | 'createdAt'>>) {
+    const row = this.memories.get(id); if (!row) return null;
+    const next = { ...row, ...structuredClone(patch) }; this.memories.set(id, next); return structuredClone(next);
+  }
+  async deleteMemory(id: string) { return this.memories.delete(id); }
+  async truncateMemories(windowId: string) {
+    let n = 0;
+    for (const [id, m] of this.memories) { if (m.windowId === windowId) { this.memories.delete(id); n++; } }
+    return n;
+  }
+  async listSnapshots(windowId: string) { return [...this.snapshots.values()].filter((s) => s.windowId === windowId).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)).map((s) => structuredClone(s)); }
+  async listSnapshotsByScope(project: string, charKey?: string) {
+    const ck = charKey || '';
+    return [...this.snapshots.values()].filter((s) => s.project === project && s.charKey === ck).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)).map((s) => structuredClone(s));
+  }
+  async createSnapshot(row: DeskMemorySnapshot) { this.snapshots.set(row.id, structuredClone(row)); }
+  async restoreSnapshot(snapshotId: string) {
+    const snap = this.snapshots.get(snapshotId); if (!snap) return null;
+    const next = (snap.data || []).map((m) => structuredClone(m));
+    // 回退按作用域（project+charKey）清空，再重建。
+    for (const [id, m] of this.memories) {
+      if (m.project === snap.project && m.charKey === snap.charKey) this.memories.delete(id);
+    }
+    for (const m of next) this.memories.set(m.id, m);
+    return snapshotData(snap);
+  }
+}
+
+function snapshotData(snap: DeskMemorySnapshot): DeskMemory[] {
+  return (snap.data || []).map((m) => structuredClone(m));
+}
+
 export function createMemoryStorage(seed: MemorySeed = {}): StorageAdapter {
   const desk = new MemoryDeskStorage(seed);
   const reading = new MemoryReadingStorage(seed);
@@ -195,5 +280,6 @@ export function createMemoryStorage(seed: MemorySeed = {}): StorageAdapter {
     deskAssets: new MemoryDeskAssetStorage(seed),
     deskStory: new MemoryDeskStoryStorage(seed, reading.chapters),
     deskTurn: desk,
+    memory: new MemoryDeskMemoryStorage(seed),
   };
 }

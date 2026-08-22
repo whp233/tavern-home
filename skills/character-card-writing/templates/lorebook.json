@@ -1,0 +1,22 @@
+{
+  "character_book": {
+    "name": "【世界书/词条组名】",
+    "description": "【可选：这组词条管理的是什么】",
+    "scan_depth": 4,
+    "token_budget": 400,
+    "recursive_scanning": false,
+    "extensions": {},
+    "entries": [
+      {
+        "keys": ["【触发关键词1】", "【触发关键词2】"],
+        "content": "【命中的词条内容：当对话提到某 key 时注入的设定/事实。用 {{char}}/{{user}}】",
+        "extensions": {},
+        "enabled": true,
+        "insertion_order": 1,
+        "case_sensitive": false,
+        "constant": false,
+        "position": "before_char"
+      }
+    ]
+  }
+}

@@ -33,6 +33,20 @@ const FILTER_TABS: { key: Filter; label: string }[] = [
   { key: 'trashed', label: '回收站' },
 ];
 
+// 章节索引条目(task-18):与后端 src/core/deskMemory.ts ChapterIndexEntry 对齐。
+// 成书成功自动种基础条目(章号/标题/梗概);整合整理补全主题/关键事件/角色状态并标记完成。
+type IdxEntry = {
+  chapterNo: string;
+  title: string;
+  theme: string;
+  events: string[];
+  charState: string;
+  summary: string;
+  sourceChapterId: string;
+  integrated: boolean;
+  updatedAt: string;
+};
+
 // ── 卡片风格小料(与 page.tsx/ReadingCorner.tsx 同款数值,组件独立成文件故各自留一份) ──
 const cardStyle: React.CSSProperties = {
   background: 'var(--card-bg)', border: '1px solid var(--line-soft)', borderRadius: 22, boxShadow: '0 6px 18px var(--card-shadow)',
@@ -606,6 +620,102 @@ export default function ChaptersStudio({ base, envOk, project, onEditorOpenChang
     a.click();
     a.remove();
   }
+  // ── 章节记忆(task-18) + 参考风格(task-19) ──
+  // 面板默认收起,展开时才拉数据(索引/风格各一个 GET,量小但没必要每次进工房都打两枪)。
+  // integrate 走 auto=未整理优先;指定章号用逗号分隔传 chapters(用户选择为主)。
+  const [novelOpen, setNovelOpen] = useState(false);
+  const [styleCfg, setStyleCfg] = useState({ enabled: false, bookTitle: '', styleNotes: '', excerpt: '' });
+  const [styleBusy, setStyleBusy] = useState(false);
+  const [styleError, setStyleError] = useState('');
+  const [idxEntries, setIdxEntries] = useState<IdxEntry[]>([]);
+  const [idxLoading, setIdxLoading] = useState(false);
+  const [idxError, setIdxError] = useState('');
+  const [idxNonce, setIdxNonce] = useState(0);
+  const [integrateBusy, setIntegrateBusy] = useState(false);
+  const [integrateMsg, setIntegrateMsg] = useState('');
+  const [chapterNosInput, setChapterNosInput] = useState('');
+
+  useEffect(() => {
+    if (!novelOpen || !envOk) return;
+    let cancelled = false;
+    (async () => {
+      setIdxLoading(true); setIdxError('');
+      try {
+        const qs = new URLSearchParams({ project });
+        const [styleRes, idxRes] = await Promise.all([
+          fetch(`${base}/api/oc/desk/novel/style-ref?${qs.toString()}`),
+          fetch(`${base}/api/oc/desk/novel/chapter-index?${qs.toString()}`),
+        ]);
+        const styleD = await styleRes.json().catch(() => null);
+        const idxD = await idxRes.json().catch(() => null);
+        if (cancelled) return;
+        if (styleRes.ok && styleD?.success && styleD.config) {
+          setStyleCfg({
+            enabled: !!styleD.config.enabled,
+            bookTitle: String(styleD.config.bookTitle || ''),
+            styleNotes: String(styleD.config.styleNotes || ''),
+            excerpt: String(styleD.config.excerpt || ''),
+          });
+        }
+        if (idxRes.ok && idxD?.success && Array.isArray(idxD.entries)) setIdxEntries(idxD.entries);
+        else if (!idxRes.ok || idxD?.success === false) setIdxError(idxD?.error || `HTTP ${idxRes.status}`);
+      } catch (e: any) { if (!cancelled) setIdxError(e.message || '索引拉取失败'); }
+      finally { if (!cancelled) setIdxLoading(false); }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [base, envOk, project, novelOpen, idxNonce]);
+
+  async function saveStyleRef() {
+    setStyleBusy(true); setStyleError('');
+    try {
+      const res = await fetch(`${base}/api/oc/desk/novel/style-ref`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project,
+          enabled: styleCfg.enabled,
+          book_title: styleCfg.bookTitle.trim(),
+          style_notes: styleCfg.styleNotes.trim(),
+          excerpt: styleCfg.excerpt.trim(),
+        }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d || d.success !== true) throw new Error(d?.error || '保存失败');
+      setIntegrateMsg('参考风格已保存——自动成书与聊天续写都会带上这份风格指引。');
+    } catch (e: any) { setStyleError(e.message || '保存失败'); }
+    finally { setStyleBusy(false); }
+  }
+
+  // 整合整理:auto=未整理优先(建议位);chapters=指定章号列表(用户选择为主)。失败的章不标记完成。
+  async function runIntegrate(opts?: { chapters?: string[] }) {
+    setIntegrateBusy(true); setIntegrateMsg('整合中…(每章一次模型调用,多章会等一会儿)');
+    try {
+      const res = await fetch(`${base}/api/oc/desk/novel/integrate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(opts?.chapters?.length ? { project, chapters: opts.chapters } : { project, auto: true }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d || d.success !== true) throw new Error(d?.error || '整合失败');
+      const failedCount = Array.isArray(d.failed) ? d.failed.length : 0;
+      setIntegrateMsg(
+        `已整理 ${Array.isArray(d.results) ? d.results.filter((r: any) => r.ok).length : 0} 章` +
+        `(抽取成功 ${d.extracted ?? 0}${failedCount ? `,失败 ${failedCount} 可重试` : ''})` +
+        `${d.remaining_candidates ? `,还有 ${d.remaining_candidates} 章待整理` : ''}` +
+        `${d.memory && d.memory.added >= 0 ? `,记忆新增 ${d.memory.added} 条` : ''}`,
+      );
+      setIdxNonce((n) => n + 1);
+    } catch (e: any) { setIntegrateMsg(e.message || '整合失败'); }
+    finally { setIntegrateBusy(false); }
+  }
+
+  function runIntegrateSpecified() {
+    const nos = chapterNosInput.split(/[、,，\s]+/).map((s) => s.trim()).filter(Boolean);
+    if (!nos.length) { setIntegrateMsg('先填要整理的章号(逗号分隔),或直接点「一键整理未整理」'); return; }
+    runIntegrate({ chapters: nos });
+  }
+
   const emptyText = trashView ? '回收站是空的~删除的章节会先进这里,还能恢复'
     : filter === 'published' ? '还没有已发布的章节~发布后才会出现在这里'
     : filter === 'draft' ? '还没有未发布的章节~'
@@ -746,6 +856,105 @@ export default function ChaptersStudio({ base, envOk, project, onEditorOpenChang
           </button>
         ))}
       </div>
+
+      {/* 章节记忆 · 参考风格(task-18/19):章节索引/整合整理 + 参考小说风格配置。默认收起。 */}
+      {!trashView && (
+        <div className="card" style={{ ...cardStyle, padding: '12px 16px', marginBottom: 12 }}>
+          <button
+            className="serc"
+            onClick={() => setNovelOpen((v) => !v)}
+            style={{ ...pillStyle, background: 'transparent', border: 'none', padding: '4px 0', color: 'var(--ink-body)' }}
+          >
+            {novelOpen ? '▾' : '▸'} 章节记忆 · 参考风格
+            {idxEntries.length > 0 ? `（已索引 ${idxEntries.length} 章 / 完成 ${idxEntries.filter((e) => e.integrated).length}）` : ''}
+          </button>
+          {novelOpen && (
+            <div style={{ borderTop: '1px solid var(--line-soft)', marginTop: 10, paddingTop: 14, display: 'grid', gap: 18 }}>
+              {/* A. 参考小说/风格（task-19）：项目级配置持久化，生成时纯 prompt 注入（无 RAG） */}
+              <div>
+                <div style={{ fontSize: 13.5, color: 'var(--ink-deep)', fontWeight: 600 }}>参考小说 / 风格</div>
+                <div style={hintStyle}>启用后自动成书与打字桌聊天续写都会带上这份风格指引——同一剧情换不同参考，文风差异一眼可见。</div>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 13, color: 'var(--ink-body)', margin: '8px 0' }}>
+                  <input type="checkbox" checked={styleCfg.enabled} onChange={(e) => setStyleCfg({ ...styleCfg, enabled: e.target.checked })} />
+                  启用参考风格
+                </label>
+                <div style={labelStyle}>参考书目（书名，仅作风格指向）</div>
+                <input
+                  value={styleCfg.bookTitle}
+                  onChange={(e) => setStyleCfg({ ...styleCfg, bookTitle: e.target.value })}
+                  placeholder="例：百年孤独"
+                  style={inputStyle}
+                />
+                <div style={{ ...labelStyle, marginTop: 10 }}>风格要点</div>
+                <textarea
+                  value={styleCfg.styleNotes}
+                  onChange={(e) => setStyleCfg({ ...styleCfg, styleNotes: e.target.value })}
+                  rows={3}
+                  placeholder="例：绵长的复合句、魔幻与现实交织、重感官细节、叙述节奏舒缓"
+                  style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.7 }}
+                />
+                <div style={{ ...labelStyle, marginTop: 10 }}>样例段落（可选，自备短节选、注意版权；模型只学笔法不抄内容）</div>
+                <textarea
+                  value={styleCfg.excerpt}
+                  onChange={(e) => setStyleCfg({ ...styleCfg, excerpt: e.target.value })}
+                  rows={4}
+                  placeholder="粘一段最能代表目标文风的文字…"
+                  style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.7 }}
+                />
+                <div style={{ display: 'flex', gap: 10, marginTop: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <button className="serc" onClick={saveStyleRef} disabled={styleBusy} style={btnPrimaryStyle}>
+                    {styleBusy ? '保存中…' : '保存风格配置'}
+                  </button>
+                  {styleError && <span style={errStyle}>{styleError}</span>}
+                </div>
+              </div>
+
+              {/* B. 章节索引 · 整合整理（task-18 流程A收尾） */}
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 13.5, color: 'var(--ink-deep)', fontWeight: 600 }}>章节索引 · 整合整理</span>
+                  {idxLoading && <span style={{ fontSize: 12, color: 'var(--ink2)' }}>加载中…</span>}
+                </div>
+                <div style={hintStyle}>
+                  自动成书每成功一章就自动登记一条基础索引（章号/标题/梗概）；「整合整理」用模型补全主题/关键事件/角色状态并标记完成，
+                  剧情要点同时并入打字桌记忆的剧情摘要层。新对话续写与后续成书都会按这套索引检索相关旧章素材。
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <button className="serc" onClick={() => runIntegrate()} disabled={integrateBusy} style={btnPrimaryStyle}>
+                    一键整理未整理{idxEntries.length ? `（${idxEntries.filter((e) => !e.integrated).length} 章）` : ''}
+                  </button>
+                  <input
+                    value={chapterNosInput}
+                    onChange={(e) => setChapterNosInput(e.target.value)}
+                    placeholder="或指定章号，如：3,5"
+                    style={{ ...inputStyle, width: 170 }}
+                  />
+                  <button className="serc" onClick={runIntegrateSpecified} disabled={integrateBusy || !chapterNosInput.trim()} style={pillStyle}>
+                    整理指定章节
+                  </button>
+                </div>
+                {integrateMsg && <div style={{ ...hintStyle, marginTop: 8 }}>{integrateMsg}</div>}
+                {idxError && <div style={errStyle}>{idxError}</div>}
+                {idxEntries.length > 0 && (
+                  <div style={{ marginTop: 10, maxHeight: 220, overflowY: 'auto', border: '1px solid var(--line-soft)', borderRadius: 10, padding: '8px 12px' }}>
+                    {idxEntries.map((en) => (
+                      <div key={en.chapterNo} style={{ fontSize: 12.5, padding: '4px 0', borderBottom: '1px dashed var(--line-soft)', color: 'var(--ink-body)' }}>
+                        <span style={{ color: en.integrated ? 'var(--accent)' : 'var(--ink2)' }}>
+                          {en.integrated ? '✓' : '○'} 第{en.chapterNo}章
+                        </span>
+                        {en.title ? `《${en.title}》` : ''}
+                        {en.theme && en.theme !== '未整理' ? `｜${en.theme}` : ''}
+                        {en.events?.length ? `｜关键事件 ${en.events.length} 条` : ''}
+                        {en.charState ? '｜含角色状态' : ''}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 批量工具条:选中时就出现;按钮按当前视图给(普通列表=发布/撤回/软删,回收站=恢复/彻底删) */}
       {(selected.size > 0 || batchBusy) && (

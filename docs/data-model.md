@@ -223,3 +223,38 @@ ST 正则脚本子集：`find`/`replace`/`flags`/`direction`。见 `src/tools/de
 索引：`(window_id, created_at)`。
 
 `DeskTurnStorage`（`commitAssistantFloor`/`rollAssistantFloor`）没有单独的表——它是对 `desk_floors`/`desk_windows` 的原子写入约束：一次成功的模型轮次要同时写入新楼层内容和更新窗口的状态板/时光带引用，`roll` 场景还要额外校验目标楼层没有在生成期间被并发修改（乐观并发），细节看 D1 参考实现 `examples/cloudflare/adapters/d1DeskTurnStorage.ts`。
+
+## `diaries`（日记 / `DiaryEntry`）
+
+酒馆之家「日记」功能（task-12）：按日期组织的个人+剧情日记。字段对齐妹居存档实测格式
+（`date` "2026/6/27"、`time` "下午3:35:11"、`affection`、`content`、`conversationLength` + id），
+并在其上扩展项目/角色关联与反向递归锚点。存储：`examples/cloudflare/adapters/d1DiaryStorage.ts`
+（`DiaryStorage` 契约在 `src/core/storage.ts`）；纯逻辑：`src/core/diaryService.ts`；REST 壳：
+`src/tools/diary.ts`；前端：`frontend/app/study/DiaryRoom.tsx`（左廊「日记」门）。
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `id` | TEXT PK | 日记 id（`diary_<ts>_<rand>`；对齐妹居 `diaryId` 的「从日记反查剧情」锚点语义） |
+| `project` | TEXT | 可选关联项目（命名空间，空串=未指定） |
+| `char_key` | TEXT | 可选角色关联（「谁的日记」，空串=未指定） |
+| `date` | TEXT | 归一化日期 "YYYY/M/D"（妹居实测格式，无前导零；因为无前导零不可词法排序，排序由工具层数值比较，见 `compareDiaryDesc`） |
+| `time` | TEXT | 当日记录时间，妹居风格 "下午3:35:11"（新建时自动填现在） |
+| `title` | TEXT | 可选标题 |
+| `content` | TEXT | 日记正文（20 万字上限） |
+| `affection` | INTEGER | 好感度数值（0-1000，可空；妹居实测字段） |
+| `conversation_id` | TEXT | 反向递归锚点：关联对话 id（可从日记反查剧情节点，联动 task-13/14 回溯场景/自定义 CG） |
+| `conversation_length` | INTEGER | 对话条数（可空；妹居实测字段） |
+| `created_at` / `updated_at` | TEXT | 时间戳 |
+
+索引：`(date, updated_at DESC)`、`(project, char_key, updated_at DESC)`。
+
+API（挂在 `/{AUTH_TOKEN}/api/oc/diary*` 下，见 `examples/cloudflare/index.ts`）：
+- `GET /api/oc/diary/dates?project=&char_key=` — 日期刻度（去重日期 + 当日条数，时间线/月份导航）
+- `GET /api/oc/diary?date=&project=&char_key=&limit=` — 列表（条目带 preview，不带全文）
+- `POST /api/oc/diary` — 新建（`date` 缺省今天、`time` 缺省现在；正文必填）
+- `GET /api/oc/diary/:id` — 单条全文（编辑回填，绝不截断）
+- `PUT /api/oc/diary/:id` — 部分更新（`date` 会归一化）
+- `DELETE /api/oc/diary/:id` — 删除
+
+生成参照：若后续用户要求「AI 自动写日记」，用 `docs/diary-prompt-template.md` 的「过程还原」Prompt
+（第一人称时间线回放 + 成年/未成年双分支护栏；**未成年一律全年龄向，硬性护栏**）。

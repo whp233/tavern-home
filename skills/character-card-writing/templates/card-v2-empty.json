@@ -1,0 +1,20 @@
+{
+  "spec": "chara_card_v2",
+  "spec_version": "2.0",
+  "data": {
+    "name": "【角色名，唯一必填】",
+    "description": "{{char}} 是【身份：年龄/职业/背景一句话】。【外貌：2-3句，身高/体型/发色/眼神/穿着/仪态】。{{char}} 与 {{user}} 的关系：【关系与当前状态】。关键想做的事：【目标/驱动力】。",
+    "personality": "{{char}} 【行为化性格，覆盖四问：如何说话 / 压力下如何反应 / 看重什么 / 回避什么。例如：受挫时用玩笑搪塞；在乎的人误会时会先沉默再一口气解释；最怕在重要的人面前暴露脆弱】。",
+    "scenario": "【1-3句：地点 + 当下动作 + 情绪处境，用 {{char}}/{{user}}】",
+    "first_mes": "*【角色口吻的动作/感官描写，铺场景】*\n\"【开场白对话：定句长/词汇/态度，给 {{user}} 一句可接的话】\"\n*【再一个动作或环境细节，让 {{user}} 有得回应】*",
+    "mes_example": "<START>\n{{user}}: 【一个可能被问的问题】\n{{char}}: *【动作反映内心】* \"【用角色独特口吻的回答】\"\n<START>\n{{user}}: 【另一个触发性格的场景】\n{{char}}: 【再来一条，锁定说话节奏与口头习惯】",
+    "creator_notes": "【备注：推荐玩法/文体，不发给模型】",
+    "system_prompt": "",
+    "post_history_instructions": "",
+    "alternate_greetings": [],
+    "tags": [],
+    "creator": "",
+    "character_version": "1.0",
+    "extensions": {}
+  }
+}

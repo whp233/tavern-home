@@ -19,11 +19,14 @@ import { assembleDesk } from './deskAssemble';
 import { loadDeskTimelineState, renderTimelineText, parseDeskTimelineCutoff, maybeFoldDeskTimeline, invalidateDeskTimelineIfFolded, fenceDeskTimelineAfterWrite } from './deskTimeline';
 import type { Ai, VectorizeIndex } from '../storage/vectorize';
 import { parseStateBoard as parseCoreStateBoard, STATEBOARD_MAX_BYTES as CORE_STATEBOARD_MAX_BYTES } from '../core/stateBoard.ts';
-import type { DeskAssetStorage, DeskStorage, DeskStoryStorage, DeskTurnStorage, SemanticSearchAdapter } from '../core/storage.ts';
+import type { DeskAssetStorage, DeskMemoryStorage, DeskStorage, DeskStoryStorage, DeskTurnStorage, SemanticSearchAdapter } from '../core/storage.ts';
+import type { DeskMemory, MemoryLayer } from '../core/types.ts';
+import { buildDistillationInput, buildMemoryDistillSystem, buildSummaryInput, applySummaryDiff, mergeMemories, parseMemoryDistillOutput, renderMemoriesText, type MergeMemoryInput, type DistillMemory } from '../core/deskMemory.ts';
 import { makeDeskBackend, resolveDeskProvider } from '../adapters/streamModelBackends.ts';
 import type { ProviderOverride } from '../core/providerConfigStore.ts';
 import { isTextOnlyModel, type DeskImageAttachment, type StreamChatResult } from '../core/modelBackend.ts';
 import { validateDeskChannelConfig } from '../core/deskChannelConfig.ts';
+import { buildChatAppendix } from '../tools/chapterMemory.ts';
 
 interface DeskChatEnv {
   OC_DB: D1Database;
@@ -59,6 +62,7 @@ export interface DeskChatStorage {
   deskAssets: DeskAssetStorage;
   deskStory: DeskStoryStorage;
   semantic?: SemanticSearchAdapter;
+  memory?: DeskMemoryStorage;
 }
 
 // 把模型层结构化失败/截断转成用户能看懂的中文文案。SSE 的 error 事件会原文透传到前端横幅，
@@ -222,6 +226,132 @@ export function unwrapContentTag(text: string): string {
   return s;
 }
 
+// ===== 记忆自动蒸馏(后台 best-effort)=====
+// 普通轮落库成功后触发：取最近若干楼层 → 调模型提炼 JSON → 解析 → 并入该窗所属作用域（角色区
+// 或共享区）的 plot/general 层。全程吞异常：蒸馏失败绝不影响已完成的聊天与存档。
+// 仅在有 memory storage 与已配置供应商时跑。
+async function runMemoryDistill(
+  env: DeskChatEnv,
+  storage: DeskChatStorage,
+  windowId: string,
+  provider: string,
+  providerOverrides: ProviderOverride[],
+): Promise<void> {
+  const memoryStore = storage.memory;
+  if (!memoryStore) return;
+  // 未配置任何供应商就跳过（蒸馏也要模型，不能裸跑）。
+  const resolved = provider ? resolveDeskProvider(env, provider, providerOverrides) : null;
+  const hasChannel = resolved ? true : !validateDeskChannelConfig(env);
+  if (!hasChannel) return;
+  try {
+    const { deskStorage } = storage;
+    const win = await deskStorage.getWindow(windowId);
+    if (!win) return;
+    const project = String(win.project);
+    const charKey = String(win.charKey || (win.vars && win.vars.char) || '');
+    const floors = await deskStorage.listFloors(windowId);
+    const input = buildDistillationInput(floors);
+    if (!input) return;
+    const system = [{ text: buildMemoryDistillSystem(), cache: true }];
+    const backend = makeDeskBackend(env, provider || undefined, providerOverrides);
+    let distillText = '';
+    const result = await backend.streamChat({
+      system,
+      prompt: input,
+      model: DESK_DEFAULT_MODEL,
+      signal: AbortSignal.timeout(90_000),
+      onEvent: (event) => { if (event.type === 'text') distillText += event.text; },
+    });
+    if (!result.ok) return;
+    const parsed = parseMemoryDistillOutput(distillText);
+    if (!parsed.memories.length) return;
+    // 归属：自动蒸馏统一写进该窗作用域（窗口声明的 charKey，缺省共享区）。**不使用模型输出的
+    // charKey**——它与 replaceScope 的强制作用域会不一致（模型给 A 而窗是 B，row 带着 A 却按 B
+    // 落库），且注入只读窗口 charKey 作用域，模型 charKey 无消费端。统一"只用窗口 charKey"消除
+    // 归属与实际落库的错位。强制非 anchor：自动路径绝不写人设锚定区。
+    const incoming: MergeMemoryInput[] = parsed.memories.map((inc) => ({
+      theme: inc.theme,
+      layer: inc.layer === 'anchor' ? 'plot' : inc.layer,
+      charKey,
+      title: inc.title,
+      content: inc.content,
+    }));
+    const existing = await memoryStore.listByScope({ project, charKey });
+    const { next } = mergeMemories(existing, incoming, { project, charKey, windowId });
+    // 按作用域批量落库：anchor 守卫在 replaceScope 内部保证既有 anchor 不被剧情蒸馏清除。
+    await memoryStore.replaceScope({ project, charKey, memories: next });
+  } catch (e) {
+    console.error('[desk] 记忆自动蒸馏失败(不拖垮聊天)', e);
+  }
+}
+
+// ===== 手动总结（角色级 / 项目级，POST /memories/summarize 后端调用）=====
+// 取某作用域关联各窗最近楼层 + 当前记忆 → 模型总结 → 落到各层。
+// 角色级 charKey 非空：只汇总该角色；项目级 charKey 空：汇总该项目所有角色 + 共享区 plot/general。
+// anchor 策略：applySummaryDiff 只新增 anchor，不覆盖既有 anchor。
+export async function runMemorySummarize(
+  env: DeskChatEnv,
+  storage: DeskChatStorage,
+  opts: { project: string; charKey?: string; windowLimit?: number; layer?: 'anchor' | 'plot' | 'general' },
+  provider: string,
+  providerOverrides: ProviderOverride[],
+): Promise<{ added: number; updated: number; dropped: number; anchorGuard: number } | { error: string }> {
+  const memoryStore = storage.memory;
+  if (!memoryStore) return { error: 'memory storage 未接' };
+  const project = opts.project || '';
+  if (!project) return { error: 'project 必填' };
+  const resolved = provider ? resolveDeskProvider(env, provider, providerOverrides) : null;
+  const hasChannel = resolved ? true : !validateDeskChannelConfig(env);
+  if (!hasChannel) return { error: '未配置模型供应商，无法总结' };
+  try {
+    const { deskStorage } = storage;
+    // 收集该作用域下的窗口：charKey 非空 → 该角色所有窗；空 → 项目内所有窗。
+    const windows = await deskStorage.listWindows(project);
+    const charKey = opts.charKey || '';
+    const scopeWindows = charKey
+      ? windows.filter((w) => String(w.charKey || (w.vars && w.vars.char) || '') === charKey)
+      : windows;
+    const limit = opts.windowLimit && opts.windowLimit > 0 ? opts.windowLimit : 20;
+    // 汇总各窗最近楼层（限流）
+    const floors: Array<{ windowId: string; charKey: string; role: 'user' | 'assistant'; content: string }> = [];
+    for (const w of scopeWindows.slice(0, 40)) {
+      const fl = await deskStorage.listFloors(w.id);
+      for (const f of fl.slice(-limit)) {
+        floors.push({ windowId: w.id, charKey: String(w.charKey || w.vars?.char || ''), role: f.role, content: f.content });
+      }
+    }
+    if (!floors.length) return { added: 0, updated: 0, dropped: 0, anchorGuard: 0 };
+    const current = await memoryStore.listByScope({ project, charKey });
+    const input = buildSummaryInput(floors, current, project);
+    const system = [{ text: buildMemoryDistillSystem(), cache: true }];
+    const backend = makeDeskBackend(env, provider || undefined, providerOverrides);
+    let summaryText = '';
+    const result = await backend.streamChat({
+      system,
+      prompt: input,
+      model: DESK_DEFAULT_MODEL,
+      signal: AbortSignal.timeout(120_000),
+      onEvent: (event) => { if (event.type === 'text') summaryText += event.text; },
+    });
+    if (!result.ok) return { error: `模型未正常收尾(${result.kind})` };
+    const parsed = parseMemoryDistillOutput(summaryText);
+    if (!parsed.memories.length) return { added: 0, updated: 0, dropped: 0, anchorGuard: 0 };
+    // 仅当 layer='anchor' 时允许手动补锚；否则强制非 anchor（剧情总结不动锚）。
+    const allowAnchor = opts.layer === 'anchor';
+    const incoming: DistillMemory[] = parsed.memories.map((inc) => ({
+      ...inc,
+      layer: (allowAnchor && inc.layer === 'anchor') ? ('anchor' as MemoryLayer) : (inc.layer === 'anchor' ? ('plot' as MemoryLayer) : inc.layer),
+      charKey: inc.charKey || charKey,
+    }));
+    const { next, added, updated, dropped, anchorGuard } = applySummaryDiff(current, incoming, { project, charKey, windowId: '' });
+    await memoryStore.replaceScope({ project, charKey, memories: next });
+    return { added: added.length, updated: updated.length, dropped, anchorGuard };
+  } catch (e: any) {
+    console.error('[desk] 手动总结失败', e);
+    return { error: e.message || '总结失败' };
+  }
+}
+
 // ===== handleDeskChat =====
 export async function handleDeskChat(
   env: DeskChatEnv,
@@ -259,7 +389,7 @@ export async function handleDeskChat(
   if (channelError) return errJson(channelError, 500);
 
   const usageSink = makeD1UsageSink(env);
-  const { deskStorage, turnStorage, deskAssets, deskStory, semantic } = storage;
+  const { deskStorage, turnStorage, deskAssets, deskStory, semantic, memory } = storage;
   // 模型选择:OpenAI 兼容供应商的 model 是 wire 模型名(deepseek-chat 之类),不在 claude 白名单
   // MODEL_PROFILES 里,不能过那个闸否则会被夹回 DESK_DEFAULT_MODEL;anthropic/老渠道才走白名单。
   // OpenAI 渠道实际 wire 模型仍以 env 的 <PREFIX>_MODEL 覆盖优先(openAiParams 的 options.model)。
@@ -387,10 +517,46 @@ export async function handleDeskChat(
     mode === 'roll' && foundRollBoard
       ? (rollStateBoard && typeof rollStateBoard === 'object' ? rollStateBoard : {})
       : stateBoard;
+  // 记忆注入（跨角色重构）：装配携带「项目共享区 + 当前角色区」的记忆（非 roll），供 AI 引用。
+  // 当前角色 = 窗口声明的 charKey，回落 windowVars.char（{{char}}）；为空的窗只进共享区。
+  // 读失败不打断装配。
+  const memCharKey = String(win.charKey || (win.vars && win.vars.char) || '');
+  let memoriesText = '';
+  if (memory) {
+    try {
+      const scopeRows: DeskMemory[] = [];
+      const sharedRows = await memory.listByScope({ project, charKey: '' });
+      scopeRows.push(...sharedRows);
+      if (memCharKey) {
+        const charRows = await memory.listByScope({ project, charKey: memCharKey });
+        scopeRows.push(...charRows);
+      }
+      memoriesText = renderMemoriesText(scopeRows);
+    } catch (e) {
+      console.error('[desk] 读记忆失败,按无记忆继续', e);
+    }
+  }
+  // 章节记忆（task-18 流程B）+ 参考风格（task-19）：新对话/续写时按索引检索相关情节注入。
+  // 查询 = 本楼输入 + 最近几楼；读失败不打断装配。记忆段不在这里拼——上方 memoriesText 已含，
+  // 重复注入只会烧 token。附录与风格块都拼进 memories 槽（故事水流里情节核心之后）。
+  let chapterAppendix = '';
+  let styleAppendix = '';
+  if (project) {
+    try {
+      const recentQuery = [assembleInput, ...assembleFloors.slice(-3).map((f: any) => f.content)]
+        .filter(Boolean).join('\n').slice(0, 800);
+      const appx = await buildChatAppendix(env as any, { project, query: recentQuery, charKey: memCharKey });
+      chapterAppendix = appx.appendix;
+      styleAppendix = appx.styleBlock;
+    } catch (e) {
+      console.error('[desk] 章节记忆/参考风格注入失败,按无注入继续', e);
+    }
+  }
   const assembled = await assembleDesk({ deskAssets, deskStory, semantic }, {
     project, recipeId, input: assembleInput,
     floors: assembleFloors, note, noteDepth,
     stateBoard: effectiveStateBoard, vars: windowVars, timeline: timelineText,
+    memories: [memoriesText, chapterAppendix, styleAppendix].filter((s) => s && s.trim()).join('\n\n'),
   });
   if (!assembled.success) return errJson(assembled.error || '装配失败', 500);
   const systemBlocks: Array<{ text: string; cache: boolean }> = assembled.system;
@@ -489,7 +655,14 @@ export async function handleDeskChat(
       try {
         const saved = await finalizeDeskTurn(result.text, result.thinking);
         if ('conflict' in saved) { failed = true; await send({ type: 'error', error: '这一楼在生成期间被改动过,本次结果已丢弃,请重试' }); }
-        else await send({ type: 'done', id: saved.floorId });
+        else {
+          await send({ type: 'done', id: saved.floorId });
+          // 普通轮落库成功后后台自动提炼记忆（best-effort，失败不打断）。
+          if (mode === 'normal' && memory) {
+            const distill = () => runMemoryDistill(env, storage, windowId, provider, providerOverrides);
+            if (waitUntil) waitUntil(distill()); else distill();
+          }
+        }
       } catch (error: any) { failed = true; await send({ type: 'error', error: `存档失败: ${error.message}` }); }
     }
     const usage = result.usage || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };

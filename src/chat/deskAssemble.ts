@@ -42,6 +42,9 @@ export interface AssembleParams {
   vars?: Record<string, string>;
   // 调用方传入已渲染的时光带；本模块不读取其 D1/CAS 状态。
   timeline?: string;
+  // 调用方传入已渲染的记忆段落（打字桌记忆模块），注入故事水流里情节核心之后。
+  // 只进 tail 不进 cacheable 前缀，避免时钟/随对话变化时破坏"稳定前缀"字节一致性。
+  memories?: string;
 }
 
 // 状态板指令是稳定 system 前缀的一部分。协议围栏必须位于回复末尾，否则按正文处理。
@@ -569,6 +572,9 @@ export async function assembleDesk(env: DeskAssembleEnv, params: AssembleParams)
   // 后传进来);没传/传空串按"这窗还没折过"处理,故事流照样连续,不占位糊弄。
   const timelineText = includeHistory && typeof params.timeline === 'string' ? params.timeline : '';
 
+  // 记忆注入：放在情节核心之后、往事/时光带之前——这些都是"该记住的静态事实",与故事水流并列。
+  const memoriesText = includeHistory && typeof params.memories === 'string' ? params.memories : '';
+
   // 导演纸条按 noteDepth 插入近景楼层；无楼层时放在 post-blocks 后、状态板前。
   const floorLines = floors.map((f) => {
     const speaker = f.role === 'user' ? ctxUser : ctxChar;
@@ -580,7 +586,7 @@ export async function assembleDesk(env: DeskAssembleEnv, params: AssembleParams)
   const floorsText = includeHistory ? spliced.floorLines.join('\n\n') : '';
 
   const streamParts = includeHistory
-    ? [coreText, pastText, recentText, timelineText, floorsText].filter((s) => s && s.trim())
+    ? [coreText, memoriesText, pastText, recentText, timelineText, floorsText].filter((s) => s && s.trim())
     : [];
 
   // ===== 故事流之后:配方积木后段 → 导演小纸条(若没插进近景) → 状态板+压轴角色卡 → 本楼输入 =====

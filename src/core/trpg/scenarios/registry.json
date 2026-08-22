@@ -1,0 +1,16 @@
+{
+  "scenarios": [
+    {
+      "id": "isekai-demon-lord",
+      "name": "异世界魔王讨伐",
+      "info": "你是被召唤到异世界的勇者，在体力耗尽前穿越迷雾森林、击败魔王。D20 判定 + 道具加值 + 剧情事件。",
+      "difficulty": "普通",
+      "estimatedTime": "10-15 分钟",
+      "tags": ["异世界", "魔王", "D20", "轻剧情"],
+      "paths": {
+        "config": "isekai-demon-lord.json",
+        "gmPrompt": "GM_isekai-demon-lord.json"
+      }
+    }
+  ]
+}
