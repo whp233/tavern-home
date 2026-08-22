@@ -653,6 +653,9 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
         const d = await res.json().catch(() => null);
         if (!d || d.success !== true) throw new Error(d?.error || '成书失败(服务端没确认)');
         const hasFailed = Array.isArray(d.failed) && d.failed.length;
+        const failError = hasFailed && typeof d.failed[0]?.error === 'string'
+          ? d.failed[0].error
+          : hasFailed ? '章节转写失败,已停止' : '';
         setBookProgress((p) => {
           const base = p[id] || { done: 0, remaining: 0 };
           const done = base.done + (d.done ?? 0);
@@ -665,7 +668,7 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
               already: d.already ?? 0,
               total: d.total_chapters,
               generating: false,
-              error: hasFailed ? `第 ${done + 1} 章转写失败,已停止` : '',
+              error: hasFailed ? (done > 0 ? `第 ${done + 1} 章转写失败：${failError}` : `转写失败：${failError}`) : '',
             },
           };
         });
@@ -4333,12 +4336,12 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
 
         {/* 自动成书选择器(收为章节):风格二选一 + 进度/继续生成 */}
         {bookWin && (
-          <div className="fixed inset-0 z-30 flex items-center justify-center px-6 box-border max-[760px]:px-2.5" onClick={() => { if (!bookBusy) setBookWin(null); }}>
+          <div className="fixed inset-0 z-30 flex items-center justify-center px-6 box-border max-[760px]:px-2.5" onClick={() => setBookWin(null)}>
             <div className="absolute inset-0 backdrop-blur-sm" style={{ background: 'rgba(50,55,40,0.4)' }} />
             <div className="relative w-full flex flex-col overflow-hidden" style={{ maxWidth: 380, maxHeight: '80vh', background: 'var(--card-bg)', borderRadius: 22, boxShadow: '0 20px 50px var(--card-shadow2)' }} onClick={(e) => e.stopPropagation()}>
               <div className="flex-none flex items-center justify-between" style={{ padding: '20px 22px 14px' }}>
                 <span className="serc" style={{ fontSize: 16, fontWeight: 600, color: 'var(--ink-deep)' }}>收为章节</span>
-                <button onClick={() => { if (!bookBusy) setBookWin(null); }} className="serc leading-none cursor-pointer hover:opacity-70" style={{ fontSize: 13, color: 'var(--ink2)', background: 'none', border: 'none' }}>关闭</button>
+                <button onClick={() => setBookWin(null)} className="serc leading-none cursor-pointer hover:opacity-70" style={{ fontSize: 13, color: 'var(--ink2)', background: 'none', border: 'none' }}>关闭</button>
               </div>
               <div style={{ margin: '0 22px', borderTop: '1px dashed var(--dash-line)' }} />
               <div className="flex-1 overflow-y-auto" style={{ padding: '18px 22px 24px' }}>
@@ -4405,6 +4408,41 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
             </div>
           </div>
         )}
+
+      {/* 悬浮球：收为章节/自动成书在后台跑时的非阻塞进度入口。关掉浮窗后任务继续，
+           右下角这颗球显示进度，点它随时把进度浮窗叫回来。 */}
+      {(() => {
+        const activeBookId = Object.keys(bookProgress).find((id) => {
+          const p = bookProgress[id];
+          return p && (p.generating || (p.remaining ?? 0) > 0 || p.error);
+        });
+        if (!activeBookId) return null;
+        const p = bookProgress[activeBookId];
+        const open = bookWin === activeBookId;
+        const label = p?.generating
+          ? `成书中 ${p.total != null ? `${Math.min(p.done + 1, p.total)}/${p.total}` : (p.done + 1)}`
+          : p?.error
+            ? '成书待处理'
+            : `还有 ${p?.remaining ?? 0} 章待续`;
+        return (
+          <button
+            type="button"
+            onClick={() => setBookWin(activeBookId)}
+            title={open ? '收为章节进度' : '后台成书进度，点开查看/继续'}
+            style={{
+              position: 'fixed', right: 18, bottom: 96, zIndex: 30, width: 58, height: 58,
+              borderRadius: '50%', border: '1px solid var(--line-soft)', background: 'var(--card-bg)',
+              boxShadow: '0 8px 24px var(--card-shadow2)', color: 'var(--accent)', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12,
+              fontFamily: 'inherit', fontWeight: 600, lineHeight: 1.2, textAlign: 'center', padding: 4,
+              opacity: open ? 0 : 1, pointerEvents: open ? 'none' : 'auto',
+            }}
+          >
+            {label}
+          </button>
+        );
+      })()}
+
       </div>
       </div>
 

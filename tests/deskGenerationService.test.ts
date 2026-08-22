@@ -17,6 +17,14 @@ test('commits only a clean model result and streams progress events', async () =
   assert.equal(result.success, true); assert.equal((await storage.desk.getFloor('f'))?.content, 'story');
   assert.deepEqual((await storage.desk.getWindow('w'))?.stateBoard, { place: 'new' }); assert.deepEqual((await storage.desk.getFloor('f'))?.report?.boardBefore, { place: 'old' }); assert.deepEqual(seen, ['text']);
 });
+test('does not commit a backend result that reports max_tokens truncation', async () => {
+  const storage = await seededStorage();
+  const service = new DeskGenerationService(new FakeModelBackend({ ok: true, terminal: 'clean', text: '<content>\npartial\n</content>', thinking: '', usage, stopReason: 'max_tokens' }), storage.deskTurn);
+  const result = await service.generate({ windowId: 'w', mode: 'normal', floorId: 'f', userFloor: userSeed, system: [], prompt: 'go', model: 'fake', report: {}, stateBoard: {}, boardBeforeTrusted: true, committedAt: 't1' });
+  assert.equal(result.success, false);
+  if ('error' in result) assert.equal(result.error, 'limit');
+  assert.equal(await storage.desk.getFloor('f'), null);
+});
 
 test('does not write partial text when the backend lacks a clean terminal result', async () => {
   const storage = await seededStorage();

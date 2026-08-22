@@ -57,7 +57,9 @@ export class AnthropicStreamBackend implements ModelBackend {
       while (true) { const { done, value } = await reader.read(); if (done) { naturalEof = true; break; } buffer += decoder.decode(value, { stream: true }); const lines = buffer.split('\n'); buffer = lines.pop() || ''; for (const line of lines) await consume(line); }
       buffer += decoder.decode(); if (buffer) await consume(buffer); await splitter.flush(); await args.onEvent?.({ type: 'usage', usage });
       if (args.signal?.aborted) return { ok: false, kind: 'aborted', usage };
-      if (streamError || !messageStopped || !['end_turn', 'max_tokens'].includes(stopReason)) return { ok: false, kind: 'protocol', detail: stopReason || 'missing accepted stop reason', usage };
+      if (streamError || !messageStopped) return { ok: false, kind: 'protocol', detail: stopReason || 'missing accepted stop reason', usage };
+      if (stopReason === 'max_tokens') return { ok: false, kind: 'limit', detail: 'max_tokens', usage };
+      if (stopReason !== 'end_turn') return { ok: false, kind: 'protocol', detail: stopReason || 'missing accepted stop reason', usage };
       if (!text) return { ok: false, kind: 'empty', usage };
       return { ok: true, terminal: 'clean', text, thinking, usage, stopReason };
     } catch (error: any) {
@@ -202,11 +204,13 @@ export class OpenAIStreamBackend implements ModelBackend {
       while (true) { const { done, value } = await reader.read(); if (done) { naturalEof = true; break; } buffer += decoder.decode(value, { stream: true }); const lines = buffer.split('\n'); buffer = lines.pop() || ''; for (const line of lines) await consume(line); }
       buffer += decoder.decode(); if (buffer) await consume(buffer); await splitter.flush(); await args.onEvent?.({ type: 'usage', usage });
       if (args.signal?.aborted) return { ok: false, kind: 'aborted', usage };
-      if (streamError || !gotDone || !['stop', 'length'].includes(finishReason)) {
+      if (streamError || !gotDone) {
         // detail 优先级:[DONE] 前 EOF 是"流被打断",比 finish_reason 更本质,先报它。
         const detail = !gotDone ? 'eof without [DONE]' : (finishReason || 'missing accepted finish reason');
         return { ok: false, kind: 'protocol', detail, usage };
       }
+      if (finishReason === 'length') return { ok: false, kind: 'limit', detail: 'length', usage };
+      if (finishReason !== 'stop') return { ok: false, kind: 'protocol', detail: finishReason || 'missing accepted finish reason', usage };
       if (!text) return { ok: false, kind: 'empty', usage };
       return { ok: true, terminal: 'clean', text, thinking, usage, stopReason: finishReason };
     } catch (error: any) {

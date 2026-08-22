@@ -22,7 +22,7 @@ import { parseStateBoard as parseCoreStateBoard, STATEBOARD_MAX_BYTES as CORE_ST
 import type { DeskAssetStorage, DeskStorage, DeskStoryStorage, DeskTurnStorage, SemanticSearchAdapter } from '../core/storage.ts';
 import { makeDeskBackend, resolveDeskProvider } from '../adapters/streamModelBackends.ts';
 import type { ProviderOverride } from '../core/providerConfigStore.ts';
-import { isTextOnlyModel, type DeskImageAttachment } from '../core/modelBackend.ts';
+import { isTextOnlyModel, type DeskImageAttachment, type StreamChatResult } from '../core/modelBackend.ts';
 import { validateDeskChannelConfig } from '../core/deskChannelConfig.ts';
 
 interface DeskChatEnv {
@@ -61,6 +61,30 @@ export interface DeskChatStorage {
   semantic?: SemanticSearchAdapter;
 }
 
+// 把模型层结构化失败/截断转成用户能看懂的中文文案。SSE 的 error 事件会原文透传到前端横幅，
+// 这里的用词就是「截断原因提示」的第一道落点：不再只给干巴巴的 kind 或「重试」。
+function deskModelErrorMessage(result: StreamChatResult): string {
+  if (!result.ok) {
+    switch (result.kind) {
+      case 'limit': return '生成达到输出上限被截断（上下文不足或超过输出上限），这轮没有存档，点「重试」可继续';
+      case 'timeout': return '生成超时未完成，这轮没有存档，点「重试」可继续';
+      case 'empty': return '模型没有返回内容，这轮没有存档，点「重试」可继续';
+      case 'protocol': return `生成流异常中断${result.detail ? `（${result.detail}）` : ''}，这轮没有存档，点「重试」可继续`;
+      case 'http': return `模型接口报错${result.detail ? `（${result.detail}）` : ''}，这轮没有存档，点「重试」可继续`;
+      case 'fetch': return `网络连接失败${result.detail ? `（${result.detail}）` : ''}，这轮没有存档，点「重试」可继续`;
+      case 'config': return '模型渠道未配置或不可用，这轮没有存档';
+      case 'aborted': return '发送已中止';
+      default: return `模型渠道未正常收尾（${result.kind}），这轮没有存档，点「重试」可继续`;
+    }
+  }
+  if (result.stopReason === 'max_tokens' || result.stopReason === 'length') {
+    return '生成达到输出上限被截断（上下文不足或超过输出上限），这轮没有存档，点「重试」可继续';
+  }
+  if (result.stopReason && result.stopReason !== 'end_turn' && result.stopReason !== 'stop') {
+    return `生成未正常收尾（${result.stopReason}），这轮没有存档，点「重试」可继续`;
+  }
+  return '';
+}
 interface DeskChatParams {
   window_id: string;
   message?: string;
@@ -453,7 +477,14 @@ export async function handleDeskChat(
     signal?.removeEventListener('abort', abort);
     if (!result.ok) {
       failed = result.kind !== 'aborted';
-      if (!clientGone && result.kind !== 'aborted') await send({ type: 'error', error: `模型渠道未正常收尾(${result.kind})，这轮没有存档` });
+      if (!clientGone && result.kind !== 'aborted') {
+        const msg = deskModelErrorMessage(result);
+        if (msg) await send({ type: 'error', error: msg });
+      }
+    } else if (result.stopReason && result.stopReason !== 'end_turn' && result.stopReason !== 'stop') {
+      failed = true;
+      const msg = deskModelErrorMessage(result);
+      if (!clientGone && msg) await send({ type: 'error', error: msg });
     } else {
       try {
         const saved = await finalizeDeskTurn(result.text, result.thinking);

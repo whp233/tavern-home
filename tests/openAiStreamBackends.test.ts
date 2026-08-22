@@ -73,6 +73,16 @@ test('openai unrecognized finish_reason is protocol failure', async () => {
   assert.equal(result.ok, false);
   if (!result.ok) assert.equal(result.kind, 'protocol');
 });
+test('openai length finish_reason is a limit failure, not protocol or clean', async () => {
+  const body = sse(
+    'data: {"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":"length"}]}',
+    'data: [DONE]',
+    '',
+  );
+  const result = await new OpenAIStreamBackend({ apiKey: 'key', fetch: fakeFetch(body) }).streamChat(args);
+  assert.equal(result.ok, false);
+  if (!result.ok) { assert.equal(result.kind, 'limit'); assert.equal(result.detail, 'length'); }
+});
 
 test('openai http status is http failure', async () => {
   const result = await new OpenAIStreamBackend({ apiKey: 'key', fetch: fakeFetch('', 400) }).streamChat(args);

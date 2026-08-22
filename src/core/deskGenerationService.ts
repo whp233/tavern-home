@@ -36,6 +36,10 @@ export class DeskGenerationService {
     if (input.signal?.aborted) return { success: false, error: 'aborted' };
     const generated = await this.backend.streamChat({ system: input.system, prompt: input.prompt, model: input.model, signal: input.signal, onEvent: input.onEvent });
     if (!generated.ok) return { success: false, error: generated.kind, detail: generated.detail, usage: generated.usage };
+    if (generated.stopReason && generated.stopReason !== 'end_turn' && generated.stopReason !== 'stop') {
+      const truncated = generated.stopReason === 'max_tokens' || generated.stopReason === 'length';
+      return { success: false, error: truncated ? 'limit' : 'protocol', detail: generated.stopReason, usage: generated.usage };
+    }
     if (input.signal?.aborted) return { success: false, error: 'aborted', usage: generated.usage };
     const parsed = parseStateBoard(generated.text);
     const stateBoard = parsed.board ?? input.stateBoard;

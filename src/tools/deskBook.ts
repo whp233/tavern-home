@@ -231,7 +231,7 @@ export async function deskBookGenerate(env: DeskBookEnv, windowId: string, opts:
     apiUsage = r.usage;
     if (!r.ok) {
       const reason =
-        r.kind === 'truncated' ? '转写被 max_tokens 截断,该章未落库' :
+        r.kind === 'truncated' ? '转写达到输出上限被截断（上下文不足或超过输出上限），该章未落库，点「继续生成」可重试该章' :
         r.kind === 'no_key' ? '模型渠道没配(ANTHROPIC_API_KEY 或 OPENAI_API_KEY)' :
         r.kind === 'timeout' ? '转写超时被砍(100s),该章未落库' :
         r.kind === 'refusal' ? '模型拒答(refusal),该章未落库' :

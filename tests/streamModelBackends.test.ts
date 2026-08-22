@@ -32,3 +32,16 @@ test('anthropic accepts known terminal reasons and rejects stream errors', async
     assert.equal(result.ok, false); if (!result.ok) assert.equal(result.kind, 'protocol');
   }
 });
+test('anthropic max_tokens is a limit failure, not silently committed as clean', async () => {
+  const body = [
+    'data: {"type":"message_start","message":{"usage":{"input_tokens":5}}}',
+    'data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}',
+    'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}',
+    'data: {"type":"content_block_stop","index":0}',
+    'data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":7}}', '',
+    'data: {"type":"message_stop"}', '',
+  ].join('\n');
+  const result = await new AnthropicStreamBackend({ apiKey: 'key', fetch: fakeFetch(body) }).streamChat(args);
+  assert.equal(result.ok, false);
+  if (!result.ok) { assert.equal(result.kind, 'limit'); assert.equal(result.detail, 'max_tokens'); }
+});
