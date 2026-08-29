@@ -38,39 +38,48 @@ jobs:
       - name: cap add android (if missing)
         run: |
           set -e
-          echo "PWD=$(pwd) ls frontend:"; ls -la | head -n 30
+          set -x
+          echo "PWD=$(pwd) ls frontend:"; ls -la | head -n 50
           if [ ! -f android/gradlew ]; then
             echo "android shell missing gradlew -> npx cap add android"
             npx cap add android
             chmod +x android/gradlew || true
-            ls -la android/ | head -n 30
+            ls -la android/ | head -n 50
+            cat android/capacitor.config.json 2>&1 | head -n 50 || true
           else
             echo "android shell exists, skip cap add"
-            ls -la android/ | head -n 30
+            ls -la android/ | head -n 50
           fi
-          echo "=== android/app/build.gradle head ==="; head -n 80 android/app/build.gradle || true
+          echo "=== android/app/build.gradle head ==="; head -n 100 android/app/build.gradle || true
           if ! grep -q "abiFilters 'arm64-v8a'" android/app/build.gradle; then
             echo "apply dual ABI patch: ndk abiFilters + splits"
             python3 -c "import pathlib; p=pathlib.Path('android/app/build.gradle'); t=p.read_text(encoding='utf-8'); t=t.replace('defaultConfig {','defaultConfig {\n        ndk {\n            abiFilters \'arm64-v8a\', \'armeabi-v7a\'\n        }') if 'abiFilters' not in t else t; t=t.replace('buildTypes {','    splits {\n        abi {\n            enable true\n            reset()\n            include \'arm64-v8a\', \'armeabi-v7a\'\n            universalApk false\n        }\n    }\n\n    buildTypes {') if 'splits' not in t else t; p.write_text(t, encoding='utf-8'); print('patched')"
-            cat android/app/build.gradle | head -n 60
+            echo "=== after patch ==="; head -n 100 android/app/build.gradle || true
           fi
           grep -q "abiFilters" android/app/build.gradle && echo "dual ABI OK" || (echo "patch failed"; cat android/app/build.gradle; exit 1)
 
       - name: cap sync
-        run: npx cap sync android
+        run: |
+          set -x
+          npx cap sync android
+          ls -la android/app/src/main/assets/public/ 2>&1 | head -n 20 || true
 
-      - name: gradle assembleRelease (dual APK)
+      - name: gradle assembleDebug (dual APK)
         working-directory: frontend/android
-        run: ./gradlew assembleRelease
+        run: |
+          set -x
+          ./gradlew assembleDebug --stacktrace --info | tail -n 200
 
-      - name: gradle bundleRelease (AAB)
+      - name: gradle bundleDebug (AAB)
         working-directory: frontend/android
-        run: ./gradlew bundleRelease
+        run: |
+          set -x
+          ./gradlew bundleDebug --stacktrace --info | tail -n 200
 
       - name: upload APKs
         uses: actions/upload-artifact@v4
         with:
           name: apk-dual-abi
           path: |
-            frontend/android/app/build/outputs/apk/release/*.apk
-            frontend/android/app/build/outputs/bundle/release/*.aab
+            frontend/android/app/build/outputs/apk/debug/*.apk
+            frontend/android/app/build/outputs/bundle/debug/*.aab
