@@ -137,7 +137,7 @@ test('openai request body never carries thinking/output_config and honors stream
   assert.ok(captured);
   assert.equal(captured.model, 'deepseek-chat');
   assert.equal(captured.stream, true);
-  assert.equal(captured.max_tokens, 8000);
+  assert.equal(captured.max_tokens, 16000);
   assert.equal(captured.stream_options, undefined);
   assert.equal(captured.thinking, undefined);
   assert.equal(captured.output_config, undefined);

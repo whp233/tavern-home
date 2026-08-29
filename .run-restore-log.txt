@@ -1,0 +1,17 @@
+
+============================================
+  tavern-home one-click launcher
+============================================
+
+[1/5] Root dependencies ready
+[1/5] Frontend dependencies ready
+[2/5] .dev.vars already exists, skipping
+[3/5] Local database already initialized, skipping
+[4/5] frontend/.env.local already exists, skipping
+[5/5] Starting services...
+  Backend worker: http://localhost:8799
+  Frontend UI:   http://localhost:3001
+
+
+Done Keep the two service windows open.
+Frontend http://localhost:3001   Backend http://localhost:8799

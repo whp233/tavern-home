@@ -418,6 +418,36 @@ export function foldProtocolBlocks(text: string): FoldPart[] {
   return mergeAdjacentText(parts);
 }
 
+// ===== 旁白/台词二分（26F）：上旁白卡下气泡 =====
+export type NarrationSegment = { type: 'narration'; text: string } | { type: 'dialogue'; speaker: string; text: string };
+const NARRATION_LINE_RE = /^\s*(?:旁白|narration)\s*[:：]\s*(.+)$/i;
+const DIALOGUE_QUOTED_RE = /^\s*([A-Za-z0-9\u4e00-\u9fff_\-]{1,20})\s*[:：]\s*["“'『](.+?)["”'』]\s*$/;
+export function segmentNarration(text: string): NarrationSegment[] {
+  const raw = String(text || '');
+  if (!raw.trim()) return [];
+  const lines = raw.split(/\r?\n/);
+  const out: NarrationSegment[] = [];
+  let buf: string[] = [];
+  const flush = () => { if (buf.length) { out.push({ type: 'narration', text: buf.join('\n').trim() }); buf = []; } };
+  for (const line of lines) {
+    const mN = NARRATION_LINE_RE.exec(line);
+    if (mN) { flush(); out.push({ type: 'narration', text: mN[1].trim() }); continue; }
+    const mD = DIALOGUE_QUOTED_RE.exec(line);
+    if (mD) { flush(); out.push({ type: 'dialogue', speaker: mD[1].trim(), text: mD[2].trim() }); continue; }
+    if (!line.trim()) { if (buf.length) buf.push(''); continue; }
+    buf.push(line);
+  }
+  flush();
+  if (!out.length && raw.trim()) return [{ type: 'narration', text: raw.trim() }];
+  const merged: NarrationSegment[] = [];
+  for (const b of out) {
+    const last = merged[merged.length - 1];
+    if (last && last.type === 'narration' && b.type === 'narration') last.text = `${last.text}\n${b.text}`;
+    else merged.push(b);
+  }
+  return merged;
+}
+
 // ===== 展示分段:```html 围栏块 → 卡片,其余原样文本 =====
 
 // 'fold' 变体形状跟 FoldPart 的 fold 分支同款(折叠归展示层,跟html/text卡片同属一套"渲染段"

@@ -6,6 +6,7 @@ import { makeDeskBackend, resolveDeskProvider } from '../../src/adapters/streamM
 import type { DeskBackendEnv } from '../../src/adapters/streamModelBackends.ts';
 import type { ProviderOverride } from '../../src/core/providerConfigStore.ts';
 import { D1ProviderConfigStore } from './adapters/d1ProviderConfigStore.ts';
+import { D1DeskAssetStorage } from './adapters/d1DeskAssetStorage.ts';
 import {
   getScenario,
   listScenarioSummaries,
@@ -108,6 +109,7 @@ async function runAction(
   actionId: string,
   provider: string | undefined,
   signal: AbortSignal | undefined,
+  extra?: { preferences?: string; charCards?: Array<{ name: string; content: string; fields?: Record<string, string> }> },
 ): Promise<{ result: TrpgActionResult; demo: boolean }> {
   const scenario = getScenario(scenarioId);
   if (!scenario) throw new Error('剧本不存在');
@@ -124,7 +126,7 @@ async function runAction(
   if (useRawModel) {
     try {
       const backend = makeDeskBackend(env as DeskBackendEnv, provider, overrides);
-      const req = buildGmRequest(scenario, state, action);
+      const req = buildGmRequest(scenario, state, action, extra);
       const generated = await backend.streamChat({
         system: req.system,
         prompt: req.prompt,
@@ -180,15 +182,33 @@ export async function handleTrpgRoutes(request: Request, env: TrpgRouteEnv, url:
       return json(request, env, { success: true, scenarios: listScenarioSummaries() });
     }
 
-    // 开始
+    // 开始（支持玩家偏好+多角色卡定制）
     if (rest === 'start' && request.method === 'POST') {
       const body = await readJsonBody(request);
       const scenarioId = typeof body.scenarioId === 'string' ? body.scenarioId : '';
       const scenario = getScenario(scenarioId);
       if (!scenario) return json(request, env, { success: false, error: '剧本不存在' }, 404);
+      const preferences = typeof body.preferences === 'string' ? body.preferences.trim().slice(0, 2000) : (typeof body.customPreferences === 'string' ? body.customPreferences.trim().slice(0, 2000) : '');
+      const project = typeof body.project === 'string' ? body.project.trim() : '';
+      let charCards: Array<{ name: string; content: string; fields?: Record<string, string> }> = [];
+      if (Array.isArray(body.charCards)) {
+        charCards = (body.charCards as any[])
+          .filter((c) => c && typeof c.name === 'string' && c.name.trim())
+          .map((c) => ({ name: String(c.name).trim().slice(0, 100), content: String(c.content || '').slice(0, 2000), fields: c.fields && typeof c.fields === 'object' ? c.fields as Record<string, string> : undefined }))
+          .slice(0, 6);
+      } else if (Array.isArray(body.charNames) && project && env.OC_DB) {
+        try {
+          const lore = await new D1DeskAssetStorage(env.OC_DB).listLore(project);
+          const names: string[] = (body.charNames as any[]).filter((n) => typeof n === 'string' && n.trim()).map((n) => String(n).trim());
+          charCards = lore
+            .filter((r) => names.includes(r.name))
+            .map((r) => ({ name: r.name, content: r.content || '', fields: r.fields as Record<string, string> }))
+            .slice(0, 6);
+        } catch {}
+      }
       const state = createInitialState(scenario);
       const id = buildSessionId();
-      const session: TrpgSession = { id, scenarioId, createdAt: new Date().toISOString(), state, history: [] };
+      const session: TrpgSession = { id, scenarioId, createdAt: new Date().toISOString(), state, history: [], custom: { preferences: preferences || undefined, charCards: charCards.length ? charCards : undefined, project: project || undefined } };
       sessions.set(id, session);
       return json(request, env, {
         success: true,
@@ -202,6 +222,7 @@ export async function handleTrpgRoutes(request: Request, env: TrpgRouteEnv, url:
           tags: scenario.tags,
           intro: scenario.scenario.intro,
         },
+        custom: session.custom,
       });
     }
 
@@ -213,7 +234,7 @@ export async function handleTrpgRoutes(request: Request, env: TrpgRouteEnv, url:
       return json(request, env, { success: true, session: sessionView(session) });
     }
 
-    // 行动
+    // 行动（沿用开局时的偏好/角色卡；也允许本次覆盖）
     if (rest === 'action' && request.method === 'POST') {
       const body = await readJsonBody(request);
       const sessionId = typeof body.sessionId === 'string' ? body.sessionId : '';
@@ -222,8 +243,12 @@ export async function handleTrpgRoutes(request: Request, env: TrpgRouteEnv, url:
       const session = sessions.get(sessionId);
       if (!session) return json(request, env, { success: false, error: '会话不存在或已过期' }, 404);
       if (session.state.phase !== 'active') return json(request, env, { success: false, error: '本局已经结束，请重新开始' }, 400);
+      // 允许本次 action 覆盖定制（否则沿用开局 custom）
+      const overridePrefs = typeof body.preferences === 'string' ? body.preferences.trim().slice(0, 2000) : undefined;
+      if (overridePrefs !== undefined) session.custom = { ...(session.custom || {}), preferences: overridePrefs || undefined };
+      const extra = session.custom ? { preferences: session.custom.preferences, charCards: session.custom.charCards } : undefined;
 
-      const { result } = await runAction(env, session.scenarioId, session.state, actionId, provider, request.signal);
+      const { result } = await runAction(env, session.scenarioId, session.state, actionId, provider, request.signal, extra);
       result.sessionId = session.id;
       session.state = result.state;
       session.history.push(`${result.actionId}: ${result.narration}`);

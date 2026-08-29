@@ -14,8 +14,8 @@ import {
   type ChapterIndexEntry, type MergeMemoryInput, type RetrievalRecord,
 } from '../core/deskMemory.ts';
 import { sanitizeStyleRefConfig, renderStyleRefBlock } from '../core/deskGenerationService.ts';
-import { completeText, type CompleteTextUsage } from '../chat/modelBackend';
-import { makeD1UsageSink } from '../storage/usageSink';
+import { completeText, type CompleteTextUsage } from '../chat/modelBackend.ts';
+import { makeD1UsageSink } from '../storage/usageSink.ts';
 import { D1DeskChapterMemoryStore } from '../../examples/cloudflare/adapters/d1DeskChapterMemoryStorage.ts';
 import { D1DeskMemoryStorage } from '../../examples/cloudflare/adapters/d1DeskMemoryStorage.ts';
 import { D1DeskAssetStorage } from '../../examples/cloudflare/adapters/d1DeskAssetStorage.ts';
@@ -192,12 +192,35 @@ export async function novelContextRetrieve(env: ChapterMemoryEnv, body: any): Pr
 
 // 聊天装配用附录（task-18 流程B / task-19）：前文提要（索引大纲视图）+ 相关情节记录 + 参考风格块。
 // 刻意不含记忆段——聊天装配已自行渲染 desk_memories（renderMemoriesText），这里再拼会重复注入。
+// 26E 显式参考书：仅当 window.vars.refBookIds 非空时注入，且仅对选书注入
+export function parseRefBookIds(raw: unknown): string[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.map((s) => String(s).trim()).filter(Boolean);
+  const s = String(raw).trim();
+  if (!s) return [];
+  try {
+    const j = JSON.parse(s);
+    if (Array.isArray(j)) return j.map((x) => String(x).trim()).filter(Boolean);
+  } catch {}
+  return s.split(/[,\s，、]+/).map((x) => x.trim()).filter(Boolean);
+}
 export async function buildChatAppendix(env: ChapterMemoryEnv, opts: {
   project: string;
   query: string;
   charKey?: string;
+  refBookIds?: string[];
 }): Promise<{ appendix: string; styleBlock: string }> {
-  const { indexEntries, memories, lore } = await loadNovelContextSources(env, opts.project, opts.charKey || '');
+  // 26E：未选书不注入
+  if (opts.refBookIds && opts.refBookIds.length === 0) return { appendix: '', styleBlock: '' };
+  let { indexEntries, memories, lore } = await loadNovelContextSources(env, opts.project, opts.charKey || '');
+  if (opts.refBookIds && opts.refBookIds.length) {
+    const ids = new Set(opts.refBookIds);
+    // 显式选书：仅保留命中 id/标题 的条目
+    lore = lore.filter((l) => ids.has(l.id) || ids.has(l.name));
+    indexEntries = indexEntries.filter((e) => ids.has(e.chapterNo) || ids.has(e.title) || ids.has(e.sourceChapterId));
+    // 无命中时不注入，避免空转
+    if (!lore.length && !indexEntries.length) return { appendix: '', styleBlock: '' };
+  }
   const agg = aggregateRetrieval({ query: opts.query, indexEntries, memories, lore });
   const parts: string[] = [];
   const digest = renderChapterIndexText(indexEntries, { limit: 12 });

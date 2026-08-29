@@ -14,6 +14,7 @@ import DiaryRoom from './DiaryRoom';
 import CustomCgRoom from './CustomCgRoom';
 import TrpgRoom from './TrpgRoom';
 import BacktrackRoom from './BacktrackRoom';
+import StoryRoom from './StoryRoom';
 import {
   LoreTriggerFields, DEFAULT_LORE_TRIGGER, triggerKeysFromText, triggerModeForSave,
   type LoreTriggerValue, type LorePosition, type CharacterFields,
@@ -40,11 +41,11 @@ type SearchResult = {
   chapter?: string | null; tags: string[]; created_at: string; preview: string; score?: number;
 };
 
-type View = 'shelf' | 'project' | 'detail' | 'reading' | 'desk' | 'providers' | 'diary' | 'cg' | 'backtrack' | 'trpg';
+type View = 'shelf' | 'project' | 'detail' | 'reading' | 'desk' | 'providers' | 'diary' | 'cg' | 'backtrack' | 'trpg' | 'story';
 type DetailMode = 'view' | 'edit' | 'new';
 // 读书角内部主tab(章节工坊并入读书角)——两个文件各自留一份同名类型,本仓惯例
 // (同 ProjectField 组件独立成文件那条头注释),不为这一个小 union 类型专门拉共享文件。
-type ReadingTab = 'read' | 'chapters';
+type ReadingTab = 'read' | 'chapters' | 'story';
 
 const CATEGORIES: { key: string; label: string }[] = [
   { key: 'world', label: '设定' },
@@ -148,16 +149,22 @@ const clamp2: React.CSSProperties = {
 const RAIL_DOORS: { view: View; icon: string; label: string }[] = [
   { view: 'shelf', icon: '架', label: '书架' },
   { view: 'desk', icon: '写', label: '打字桌' },
-  { view: 'reading', icon: '读', label: '读书角' },
+  // 26E 书屋三入口合一：读书角/章节工房/剧情 合为单一“书屋”入口（内部切 tab），便签降草稿不占门
+  { view: 'reading', icon: '屋', label: '书屋' },
   { view: 'diary', icon: '记', label: '日记' },
-{ view: 'cg', icon: '图', label: 'CG' },
+  // CG 房门已隐藏（用户要求暂时隐藏，保留 view 兼容旧链接但不展示入口）
+  // { view: 'cg', icon: '图', label: 'CG' },
+  // 剧情已并入书屋（保留 view 兼容旧链接，门不单独展示）
   // task-13 回溯场景：独立预览入口，待合并进 TypingDesk 消息列表后移除。
   { view: 'backtrack', icon: '↺', label: '回溯' },
-  // 待收口窗合并（task-21）：TRPG 房门
-  { view: 'trpg', icon: '骰', label: 'TRPG' },
+  // TRPG 房门已隐藏（用户要求暂时隐藏 TRB 器/TRPG 功能，保留 view 兼容旧链接但不展示入口）
+  // { view: 'trpg', icon: '骰', label: 'TRPG' },
   { view: 'providers', icon: '商', label: '供应商' },
 
 ];
+// 供应商单独置底：从主廊独立到底部，避免视觉拥挤（用户反馈供应商在中间不舒服）
+const MAIN_DOORS = RAIL_DOORS.filter((d) => d.view !== 'providers');
+const BOTTOM_DOORS = RAIL_DOORS.filter((d) => d.view === 'providers');
 // 响应式只靠这段纯 CSS(媒体查询)判断宽窄,不用 window.innerWidth——那样首屏 SSR/hydration 值对不上
 // 客户端真实宽度,会闪一下或报 mismatch。断点取 700px(>700 才算桌面)。
 // 颜色仍然只走内联 style 里的 var(--xxx),这段 CSS 只管布局方向/宽度/滚动,不带色号。
@@ -176,6 +183,7 @@ const RAIL_CSS = `
 .sty-rail.collapsed .sty-rail-collapse { margin-left: 0; }
 .sty-rail.collapsed .sty-rail-btn { justify-content: center; padding-left: 7px; padding-right: 7px; }
 .sty-rail-doors { display: flex; flex-direction: column; gap: 4px; }
+.sty-rail-bottom { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--line-soft); }
 .sty-rail-btn { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 12px; border: 0; border-radius: 10px; background: transparent; color: var(--ink-body); font: inherit; text-decoration: none; cursor: pointer; white-space: nowrap; }
 .sty-rail-btn:hover { background: color-mix(in srgb, var(--card-bg) 58%, transparent); }
 .sty-rail-btn.active { background: var(--card-bg); box-shadow: 0 2px 8px var(--card-shadow); color: var(--ink-deep); font-weight: 600; }
@@ -195,6 +203,7 @@ const RAIL_CSS = `
   .sty-rail-collapse { display: none; }
   .sty-rail.collapsed .sty-rail-label { display: inline; }
   .sty-rail-doors { flex-direction: row; gap: 4px; }
+  .sty-rail-bottom { margin-top: 0; padding-top: 0; border-top: 0; }
   .sty-rail-btn { width: auto; flex: none; }
   .sty-home { order: -1; margin-top: 0; }
   .sty-scroll { padding: 18px 16px 32px; }
@@ -202,8 +211,21 @@ const RAIL_CSS = `
 `;
 
 export default function StudyPage() {
-  const workerUrl = process.env.NEXT_PUBLIC_WORKER_URL;
-  const token = process.env.NEXT_PUBLIC_AUTH_TOKEN;
+  const envWorkerUrl = process.env.NEXT_PUBLIC_WORKER_URL;
+  const envToken = process.env.NEXT_PUBLIC_AUTH_TOKEN;
+  // task-33 安卓壳：允许运行时通过 localStorage 覆盖 Worker 地址（Capacitor APK 不重打包切换线上/本地）
+  const [runtimeWorkerUrl, setRuntimeWorkerUrl] = useState<string | undefined>(undefined);
+  const [runtimeToken, setRuntimeToken] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    try {
+      const lsUrl = localStorage.getItem('tavern_worker_url');
+      const lsToken = localStorage.getItem('tavern_auth_token');
+      if (lsUrl) setRuntimeWorkerUrl(lsUrl);
+      if (lsToken) setRuntimeToken(lsToken);
+    } catch {}
+  }, []);
+  const workerUrl = runtimeWorkerUrl || envWorkerUrl;
+  const token = runtimeToken || envToken;
   const base = `${workerUrl}/${token}`;
   const envOk = !!workerUrl && !!token;
 
@@ -214,6 +236,7 @@ export default function StudyPage() {
   // 见 TypingDesk.tsx requestLeave 定义处注释)——TypingDesk 挂载时才有实例,ref 初始是 null,
   // 只在 view==='desk' 时才会真的被用到。
   const typingDeskRef = useRef<TypingDeskHandle | null>(null);
+  const [deskAutoEnterId, setDeskAutoEnterId] = useState<string | null>(null);
 
   useEffect(() => {
     try { setRailCollapsed(localStorage.getItem('study_rail_collapsed') === '1'); } catch { /* storage 不可用就保持展开 */ }
@@ -437,12 +460,13 @@ export default function StudyPage() {
       try {
         const params = new URLSearchParams(window.location.search);
         const v = params.get('v');
-        if (v === 'reading' || v === 'desk' || v === 'providers' || v === 'diary') {
+        if (v === 'reading' || v === 'desk' || v === 'providers' || v === 'diary' || v === 'cg' || v === 'backtrack' || v === 'trpg' || v === 'story') {
           setView(v);
           if (v === 'reading') {
             const t = params.get('t');
             const p = params.get('p');
-            if (t === 'chapters') { setReadingTab('chapters'); setReadingProject(p || null); }
+            if (t === 'chapters' || t === 'story') { setReadingTab(t as ReadingTab); setReadingProject(p || null); }
+            else if (t === 'chapters') { setReadingTab('chapters'); setReadingProject(p || null); }
           }
         } else if (v === 'project') {
           const p = params.get('p');
@@ -490,10 +514,10 @@ export default function StudyPage() {
   useEffect(() => {
     if (!restored) return;
     const params = new URLSearchParams();
-    if (view === 'reading' || view === 'desk' || view === 'providers' || view === 'diary' || view === 'cg' || view === 'backtrack' || view === 'trpg') {
+    if (view === 'reading' || view === 'desk' || view === 'providers' || view === 'diary' || view === 'cg' || view === 'backtrack' || view === 'trpg' || view === 'story') {
       params.set('v', view);
-      if (view === 'reading' && readingTab === 'chapters') {
-        params.set('t', 'chapters');
+      if (view === 'reading' && (readingTab === 'chapters' || readingTab === 'story')) {
+        params.set('t', readingTab);
         if (readingProject) params.set('p', readingProject);
       }
     } else if (view === 'project' && currentProject !== null) {
@@ -722,7 +746,7 @@ export default function StudyPage() {
             <div className="ser" style={{ fontSize: 9.5, letterSpacing: 2, color: 'var(--ink2)', marginTop: 4 }}>书斋</div>
           </div>
           <div className="sty-rail-doors">
-            {RAIL_DOORS.map((d) => {
+            {MAIN_DOORS.map((d) => {
               const active = isDoorActive(d.view);
               return (
                 <button
@@ -738,11 +762,28 @@ export default function StudyPage() {
               );
             })}
           </div>
+            <div className="sty-rail-doors sty-rail-bottom">
+              {BOTTOM_DOORS.map((d) => {
+                const active = isDoorActive(d.view);
+                return (
+                  <button
+                    key={d.view}
+                    className={`serc sty-rail-btn${active ? ' active' : ''}`}
+                    onClick={() => navigateFromRail(d.view)}
+                    style={{
+                      border: 0,
+                    }}
+                  >
+                    <span className="sty-rail-glyph">{d.icon}</span><span className="sty-rail-label">{d.label}</span>
+                  </button>
+                );
+              })}
+            </div>
         </nav>
 
         <div className="sty-main">
         {view === 'desk' ? (
-          <TypingDesk ref={typingDeskRef} base={base} envOk={envOk} onBack={() => navigate('shelf')} onManageProviders={() => navigate('providers')} />
+          <TypingDesk ref={typingDeskRef} base={base} envOk={envOk} onBack={() => navigate('shelf')} onManageProviders={() => navigate('providers')} autoEnterWindowId={deskAutoEnterId} onAutoEnterConsumed={() => setDeskAutoEnterId(null)} />
         ) : (
         <div className="sty-scroll">
 
@@ -867,17 +908,31 @@ export default function StudyPage() {
           </>
         )}
 
-        {/* ══ 读书角(章节工坊并入,读书角自己的主tab受这边控制,好让 URL/plot门跳转都能指哪打哪) ══ */}
+        {/* ══ 书屋三入口合一（26E）：读书角/章节工房/剧情 合一为单一“书屋”门，内部切 tab ══ */}
         {view === 'reading' && (
-          <ReadingCorner
-            base={base}
-            envOk={envOk}
-            mainTab={readingTab}
-            onMainTabChange={setReadingTab}
-            chaptersProject={readingProject}
-            onChaptersProjectChange={setReadingProject}
-            projectOptions={projectOptions}
-          />
+          <>
+            {/* 书屋内部三 tab：阅读 / 章节工房 / 剧情 */}
+            <div style={{ display:'flex', gap:8, marginBottom:14 }}>
+              {(['read','chapters','story'] as const).map(k=> {
+                const label = k==='read' ? '阅读' : k==='chapters' ? '章节工房' : '剧情';
+                const active = readingTab===k;
+                return <button key={k} onClick={()=>setReadingTab(k)} style={{ ...pillStyle, background: active?'var(--accent)':'var(--card-bg)', color: active?'var(--card-bg)':'var(--ink2)' }}>{label}</button>;
+              })}
+            </div>
+            {readingTab === 'story' ? (
+              <StoryRoom base={base} envOk={envOk} onGoBack={() => navigate('shelf')} onEnterDesk={(project, windowId) => { setDeskAutoEnterId(windowId); navigate('desk'); }} />
+            ) : (
+              <ReadingCorner
+                base={base}
+                envOk={envOk}
+                mainTab={readingTab as 'read'|'chapters'}
+                onMainTabChange={(t)=>setReadingTab(t)}
+                chaptersProject={readingProject}
+                onChaptersProjectChange={setReadingProject}
+                projectOptions={projectOptions}
+              />
+            )}
+          </>
         )}
 
         {/* ══ 供应商房间(左廊第四扇门「商」,整页玻璃卡片风,不做弹层;增改删后经 onChanged 刷新书架横幅) ══ */}
@@ -920,6 +975,14 @@ export default function StudyPage() {
             base={base}
             envOk={envOk}
             onGoBack={() => navigate('shelf')}
+          />
+        )}
+        {view === 'story' && (
+          <StoryRoom
+            base={base}
+            envOk={envOk}
+            onGoBack={() => navigate('shelf')}
+            onEnterDesk={(project, windowId) => { setDeskAutoEnterId(windowId); navigate('desk'); }}
           />
         )}
 

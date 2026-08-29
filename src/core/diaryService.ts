@@ -9,7 +9,7 @@
 
 import type { DiaryEntry } from './types.ts';
 
-export const DIARY_CONTENT_MAX = 200000;  // 正文上限，与 study content 同口径（20 万字）
+export const DIARY_CONTENT_MAX = 500000;  // 正文上限，放宽至 50 万字以保持剧情还原特性（原 20 万，task-22 删枝去节）
 export const DIARY_TITLE_MAX = 200;       // 标题上限
 export const DIARY_REF_MAX = 100;         // project / charKey 上限（与 study project 同口径）
 export const DIARY_CONVERSATION_ID_MAX = 200; // 对话引用 id 上限

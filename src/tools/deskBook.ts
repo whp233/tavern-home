@@ -12,12 +12,12 @@
 // 章总结向量钩子：生成的是 draft 草稿章，chapterCreate 的 published-embed 钩子不会触发；
 // 发布走既有 chapterPublish 那套钩子，这里不重复 embed。
 
-import { deskWindowGet } from './deskWindows';
-import { completeText, type CompleteTextUsage } from '../chat/modelBackend';
-import { makeD1UsageSink } from '../storage/usageSink';
-import { extractDeskTimelineAssistantBody, renderTimelineText } from '../chat/deskTimeline';
-import { parseCoreMemory } from '../chat/deskAssemble';
-import { chapterCreate } from './reading';
+import { deskWindowGet } from './deskWindows.ts';
+import { completeText, type CompleteTextUsage } from '../chat/modelBackend.ts';
+import { makeD1UsageSink } from '../storage/usageSink.ts';
+import { extractDeskTimelineAssistantBody, renderTimelineText } from '../chat/deskTimeline.ts';
+import { parseCoreMemory } from '../chat/deskAssemble.ts';
+import { chapterCreate } from './reading.ts';
 // 章节记忆（task-18）+ 参考风格（task-19）：索引/检索/风格块装配。
 import {
   aggregateRetrieval, renderChapterIndexText, sanitizeChapterIndexEntry,
@@ -31,13 +31,13 @@ import { D1DeskAssetStorage } from '../../examples/cloudflare/adapters/d1DeskAss
 import {
   deskBookSplitFloors, parseEnvelope, normalizeChapterTitle, groupFullyMapped, DESK_BOOK_BUDGET_DEFAULT,
   type DeskBookFloor, type DeskBookSplitOpts,
-} from './deskBookSplit';
+} from './deskBookSplit.ts';
 
 // 纯内核（deskBookSplit.ts）re-export，REST/测试共用同一份
 export {
   DESK_BOOK_BUDGET_DEFAULT, deskBookSplitFloors, parseEnvelope, normalizeChapterTitle, groupFullyMapped,
   type DeskBookFloor, type DeskBookChapterGroup, type DeskBookSplitOpts,
-} from './deskBookSplit';
+} from './deskBookSplit.ts';
 
 interface DeskBookEnv {
   OC_DB: D1Database;

@@ -38,6 +38,11 @@ export interface CharacterCard {
   characterBook: { entries: any } | null;
 }
 
+export const LITE_FIELDS = ['name','description','personality','scenario','system_prompt','first_mes','mes_example'] as const;
+
+// 小纸条唯一注入：Lite 卡仅用 7 字段主槽位，便签等冗余入口降级为草稿不入 tail（见 docs/character-card-lite.md）
+export const LITE_FIELD_SET = new Set<string>(LITE_FIELDS as unknown as string[]);
+
 export type ParseCharacterCardResult =
   | { ok: true; card: CharacterCard; warnings: string[] }
   | { ok: false; error: string };

@@ -6,14 +6,26 @@
     "dev": "next dev",
     "build": "next build --webpack",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "cap:init": "cap init",
+    "cap:add:android": "cap add android",
+    "cap:sync": "cap sync",
+    "cap:open:android": "cap open android",
+    "cap:build": "npm run build && npx cap sync android",
+    "android:apk:debug": "npm run cap:build && cd android && ./gradlew assembleDebug",
+    "android:apk:release": "npm run cap:build && cd android && ./gradlew assembleRelease",
+    "android:aab:release": "npm run cap:build && cd android && ./gradlew bundleRelease"
   },
   "dependencies": {
     "next": "16.2.6",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "recharts": "^3.5.1",
+    "@capacitor/core": "^6.2.0",
+    "@capacitor/android": "^6.2.0"
   },
   "devDependencies": {
+    "@capacitor/cli": "^6.2.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

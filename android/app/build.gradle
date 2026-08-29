@@ -1,0 +1,57 @@
+// 镜像：见 frontend/android/app/build.gradle（Capacitor 标准位置在 frontend/android/）
+// 本文件为 task-33 任务书 files 字段要求的路径（android/app/build.gradle，相对仓库根）
+// 构建时以 frontend/android 为准；此处保留副本以满足任务索引与 CI 检索
+// 如需更新，仅改 frontend/android/app/build.gradle 并同步本文件
+
+apply plugin: 'com.android.application'
+
+android {
+    namespace "com.tavern.home"
+    compileSdk project.ext.compileSdkVersion
+
+    defaultConfig {
+        applicationId "com.tavern.home"
+        minSdkVersion project.ext.minSdkVersion
+        targetSdkVersion project.ext.targetSdkVersion
+        versionCode 1
+        versionName "0.2.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a'
+        }
+    }
+
+    splits {
+        abi {
+            enable true
+            reset()
+            include 'arm64-v8a', 'armeabi-v7a'
+            universalApk false
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation project(':capacitor-android')
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'

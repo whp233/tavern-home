@@ -3,7 +3,7 @@
 // 持久化实现不在 core 层——examples/cloudflare/adapters/d1ProviderConfigStore.ts 用 oc_state 落库;
 // 测试可用内存实现。合并/解析逻辑在 adapters/streamModelBackends.ts 的 mergeProviderEnv 系。
 
-export type ProviderProtocol = 'openai' | 'anthropic';
+export type ProviderProtocol = 'openai' | 'anthropic' | 'responses';
 
 export interface ProviderOverride {
   id: string;              // 注册表 id(如 'deepseek')或 'custom:<随机>'

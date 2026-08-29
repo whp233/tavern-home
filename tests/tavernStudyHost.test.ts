@@ -55,7 +55,8 @@ test('serializes same-window turns and includes the current input only once', as
     host.generateDeskTurn({ windowId: made.window.id, content: 'TWO', requestId: '2' }),
   ]);
   assert.equal(one.success && two.success, true);
-  assert.equal(prompts[0].split('UNIQUE_ONE').length - 1, 1);
+  // 26E 种子隔离：tail 首插 [用户本轮指令] 块，input 会出现两次（首块 + 末尾殿后）
+  assert.equal(prompts[0].split('UNIQUE_ONE').length - 1, 2);
   const final = await host.desk.getWindow(made.window.id);
   assert.deepEqual(final.success && final.window.stateBoard, { last: 'two' });
   assert.deepEqual(final.success && final.floors.map((floor) => floor.content), ['UNIQUE_ONE', 'one', 'TWO', 'two']);

@@ -1,0 +1,66 @@
+name: android
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "frontend/**"
+      - ".github/workflows/android.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+
+      - name: npm install
+        run: npm install
+
+      - name: next build (out/)
+        run: npm run build
+        env:
+          NEXT_PUBLIC_WORKER_URL: ${{ secrets.NEXT_PUBLIC_WORKER_URL || 'https://tavern-home.example.workers.dev' }}
+          NEXT_PUBLIC_AUTH_TOKEN: ${{ secrets.NEXT_PUBLIC_AUTH_TOKEN || 'dev-token' }}
+
+      - name: cap add android (if missing)
+        run: |
+          if [ ! -d android ]; then npx cap add android; fi
+          # re-apply dual-ABI patch if cap overwrote it
+          if ! grep -q "abiFilters 'arm64-v8a'" android/app/build.gradle; then
+            echo "re-apply dual ABI patch"
+            # patch is already in repo's android/app/build.gradle, copy it
+            cp android/app/build.gradle android/app/build.gradle.bak || true
+            cp ../android/app/build.gradle android/app/build.gradle 2>/dev/null || true
+          fi
+
+      - name: cap sync
+        run: npx cap sync android
+
+      - name: gradle assembleRelease (dual APK)
+        working-directory: frontend/android
+        run: ./gradlew assembleRelease
+
+      - name: gradle bundleRelease (AAB)
+        working-directory: frontend/android
+        run: ./gradlew bundleRelease
+
+      - name: upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-dual-abi
+          path: |
+            frontend/android/app/build/outputs/apk/release/*.apk
+            frontend/android/app/build/outputs/bundle/release/*.aab

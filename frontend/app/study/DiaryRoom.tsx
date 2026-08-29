@@ -7,6 +7,7 @@
 // 颜色只走 var(--xxx) token，不写死色号。
 
 import { useState, useEffect, useCallback } from 'react';
+import { useFloatingTask, FloatingTaskBall } from './useFloatingTask';
 
 type DiaryRow = {
   id: string;
@@ -100,8 +101,10 @@ export default function DiaryRoom({ base, envOk, onGoBack }: { base: string; env
   const [loadingEntries, setLoadingEntries] = useState(false);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  // 26C 悬浮球后台化：日记保存/批量共用一颗球，AbortController -> signal -> fetch
+  const floating = useFloatingTask('日记生成中');
 
-  const api = useCallback(async (path: string, opts?: RequestInit): Promise<any> => {
+  const api = useCallback(async (path: string, opts?: RequestInit & { signal?: AbortSignal }): Promise<any> => {
     if (!envOk) throw new Error('环境变量没配好');
     const res = await fetch(`${base}${path}`, opts);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -209,21 +212,29 @@ export default function DiaryRoom({ base, envOk, onGoBack }: { base: string; env
     const convLen = editing.conversationLength.trim();
     payload.conversationLength = convLen ? Number(convLen) : null;
 
+    const signal = floating.start('保存中', { detail: '日记保存中，后台进行中' });
     setSaving(true); setError('');
     try {
+      if (signal.aborted) throw new DOMException('aborted', 'AbortError');
       const isNew = editingId === null;
       const d = isNew
-        ? await api('/api/oc/diary', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-        : await api(`/api/oc/diary/${encodeURIComponent(editingId)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        ? await api('/api/oc/diary', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal } as any)
+        : await api(`/api/oc/diary/${encodeURIComponent(editingId)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal } as any);
+      if (signal.aborted) { setError('已暂停'); return; }
       setSelectedDate(date);
       setSelected(d.diary);
       setEditing(null);
       setEditingId(null);
       refreshAll(date);
     } catch (e: any) {
-      setError(e.message || '保存失败');
+      if (e?.name === 'AbortError' || e?.message === 'aborted' || (e as any)?.aborted) {
+        setError('已暂停');
+      } else {
+        setError(e.message || '保存失败');
+      }
     } finally {
       setSaving(false);
+      floating.dismiss();
     }
   }
 
@@ -260,7 +271,72 @@ export default function DiaryRoom({ base, envOk, onGoBack }: { base: string; env
       )}
 
       {/* ── 日期刻度（时间线：妹居 diary-scale-track 同款） ── */}
-      <div style={{ ...glassStyle, padding: '14px 16px', marginBottom: 16 }}>
+        {/* ── 垂直时间线（按时间线划分）· 左侧纵轴 + 右侧概览 ── */}
+        <div style={{ ...glassStyle, padding: 0, marginBottom: 16, overflow: 'hidden' }}>
+          <div style={{ display: 'flex', flexDirection: 'row', minHeight: 140 }}>
+            <div style={{ width: 200, flex: 'none', borderRight: '1px solid var(--line-soft)', background: 'color-mix(in srgb, var(--scale-0) 70%, var(--card-bg))', padding: '16px 10px 16px 0', maxHeight: 360, overflowY: 'auto' }}>
+              <div style={{ fontSize: 11, letterSpacing: 1.5, color: 'var(--ink2)', marginBottom: 12, paddingLeft: 18 }}>时间线</div>
+              {loadingDates ? (
+                <div style={{ fontSize: 12.5, color: 'var(--ink2)', paddingLeft: 18 }}>正在翻历…</div>
+              ) : dates.length === 0 ? (
+                <div style={{ fontSize: 12.5, color: 'var(--ink2)', paddingLeft: 18, lineHeight: 1.6 }}>还没有日记<br />点「＋ 写日记」记下今天</div>
+              ) : (
+                <div style={{ position: 'relative', paddingLeft: 18 }}>
+                  <div style={{ position: 'absolute', left: 5, top: 8, bottom: 8, width: 2, background: 'var(--line-soft)', borderRadius: 1 }} />
+                  {dates.map((c) => {
+                    const active = selectedDate === c.date;
+                    return (
+                      <button
+                        key={c.date}
+                        className="serc"
+                        onClick={() => openDate(c.date)}
+                        style={{
+                          position: 'relative',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          width: '100%',
+                          textAlign: 'left',
+                          padding: '9px 10px 9px 18px',
+                          marginBottom: 4,
+                          borderRadius: 12,
+                          border: active ? '1px solid var(--accent)' : '1px solid transparent',
+                          background: active ? 'var(--card-bg)' : 'transparent',
+                          boxShadow: active ? '0 2px 10px var(--card-shadow)' : 'none',
+                          cursor: 'pointer',
+                          fontFamily: 'inherit',
+                        }}
+                      >
+                        <span style={{
+                          position: 'absolute',
+                          left: -13,
+                          top: '50%',
+                          transform: 'translateY(-50%)',
+                          width: 12,
+                          height: 12,
+                          borderRadius: '50%',
+                          border: active ? '3px solid var(--accent)' : '2px solid var(--line-soft)',
+                          background: active ? 'var(--accent)' : 'var(--card-bg)',
+                          boxShadow: active ? '0 0 0 4px rgba(120,90,255,0.14)' : 'none',
+                          flex: 'none',
+                        }} />
+                        <span style={{ fontSize: 13, color: active ? 'var(--ink-deep)' : 'var(--ink-body)', fontWeight: active ? 600 : 400, flex: '1 1 auto', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.date}</span>
+                        <span style={{ fontSize: 11, color: 'var(--ink2)', background: active ? 'var(--scale-0)' : 'var(--card-bg)', border: '1px solid var(--line-soft)', padding: '2px 7px', borderRadius: 20, flex: 'none' }}>{c.count}篇</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            <div style={{ flex: '1 1 auto', minWidth: 0, padding: '16px 18px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+              <div style={{ fontSize: 12.5, color: 'var(--ink2)' }}>已选日期</div>
+              <div className="serc" style={{ fontSize: 18, color: 'var(--ink-deep)', marginTop: 4 }}>{selectedDate} {today === selectedDate && <span style={{ fontSize: 12, color: 'var(--accent)', marginLeft: 8, background: 'rgba(120,90,255,0.1)', padding: '2px 8px', borderRadius: 20 }}>今天</span>}</div>
+              <div style={{ fontSize: 12.5, color: 'var(--ink2)', marginTop: 8 }}>{loadingEntries ? '正在翻日记…' : entries.length === 0 ? '这一天还没有日记，在列表里点“写一篇”' : `共 ${entries.length} 篇 · 纵向时间线展开在下方`}</div>
+              <div style={{ fontSize: 11.5, color: 'var(--ink2)', marginTop: 10, background: 'var(--scale-0)', borderRadius: 10, padding: '8px 10px', border: '1px dashed var(--line-soft)' }}>提示：左侧按时间线纵向划分日期，选中日期后右侧及下方列表按时间线展开当日条目。</div>
+            </div>
+          </div>
+        </div>
+      <div style={{ ...glassStyle, padding: 0, marginBottom: 16, display: 'none' }}>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <span style={{ fontSize: 12.5, color: 'var(--ink2)', flex: 'none' }}>时间线</span>
           {loadingDates ? (
@@ -366,8 +442,9 @@ export default function DiaryRoom({ base, envOk, onGoBack }: { base: string; env
           <div style={{ fontSize: 14.5, color: 'var(--ink-body)', whiteSpace: 'pre-wrap', lineHeight: 1.8 }}>{selected.content}</div>
         </div>
       ) : (
-        /* ── 当日条目列表 ── */
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        /* ── 当日条目列表 · 垂直时间线 ── */
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 0, position: 'relative', paddingLeft: 22 }}>
+            <div style={{ position: 'absolute', left: 5, top: 36, bottom: 12, width: 2, background: 'var(--line-soft)', borderRadius: 1 }} />
           <div className="serc" style={{ fontSize: 15.5, color: 'var(--ink-deep)' }}>
             {selectedDate}
             {today === selectedDate && <span style={{ fontSize: 12, color: 'var(--ink2)', marginLeft: 10 }}>今天</span>}
@@ -385,8 +462,10 @@ export default function DiaryRoom({ base, envOk, onGoBack }: { base: string; env
                 key={row.id}
                 onClick={() => openView(row)}
                 className="card"
-                style={{ ...cardStyle, padding: '15px 18px', cursor: 'pointer' }}
+                style={{ ...cardStyle, padding: '15px 18px', cursor: 'pointer', marginTop: 12, position: 'relative' as const }}
               >
+                  <div style={{ position: 'absolute', left: -17, top: 22, width: 10, height: 10, borderRadius: '50%', background: 'var(--card-bg)', border: '2.5px solid var(--accent)', boxShadow: '0 0 0 3px rgba(120,90,255,0.12)' }} />
+                  <div style={{ position: 'absolute', left: -12, top: 27, width: 14, height: 2, background: 'var(--line-soft)' }} />
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                   <span className="serc" style={{ fontSize: 15, color: 'var(--ink-deep)' }}>{row.title || `日记 · ${row.date}`}</span>
                   {row.charKey && <span style={{ fontSize: 11.5, color: 'var(--ink2)' }}>{row.charKey}</span>}
@@ -399,6 +478,7 @@ export default function DiaryRoom({ base, envOk, onGoBack }: { base: string; env
           )}
         </div>
       )}
+      <FloatingTaskBall task={floating.task} onAbort={() => floating.abort()} />
     </div>
   );
 }

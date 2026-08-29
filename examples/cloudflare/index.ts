@@ -1,4 +1,4 @@
-import { authenticate, equalSecret, hasScope, type AuthContext, type AuthEnv, type Scope } from '../../src/auth';
+import { authenticate, equalSecret, hasScope, type AuthContext, type AuthEnv, type Scope } from '../../src/auth.ts';
 import { ReadingService } from '../../src/core/readingService.ts';
 import { D1ReadingStorage } from './adapters/d1ReadingStorage.ts';
 import { D1DeskStorage } from './adapters/d1DeskStorage.ts';
@@ -6,57 +6,62 @@ import { D1DeskTurnStorage } from './adapters/d1DeskTurnStorage.ts';
 import { D1DeskAssetStorage } from './adapters/d1DeskAssetStorage.ts';
 import { D1DeskStoryStorage } from './adapters/d1DeskStoryStorage.ts';
 import { VectorizeSemanticSearch } from './adapters/vectorizeSemanticSearch.ts';
-import type { Ai, VectorizeIndex } from '../../src/storage/vectorize';
+import type { Ai, VectorizeIndex } from '../../src/storage/vectorize.ts';
 import type { SemanticSearchAdapter } from '../../src/core/storage.ts';
 import {
   deskImportPreset, deskImportSettings, deskImportWorlds, deskImportRegexBundle, importCharacterCard, deskImportChat,
   deskListPresets, deskPresetDelete, deskListRegex, deskBackfillChapterVectors,
-} from '../../src/tools/desk';
+} from '../../src/tools/desk.ts';
 import { parseCharacterCard } from '../../src/core/characterCard.ts';
 import { compactMemories, normalizeTheme, normalizeLayer } from '../../src/core/deskMemory.ts';
 import type { DeskMemory } from '../../src/core/types.ts';
 import {
   deskPresetBlocks, deskBlockUpdate, deskLoreList, deskLoreCreate, deskLoreUpdate, deskLoreDelete,
   deskRegexUpdate, deskRegexDelete, deskRegexReorder, deskCoreGet, deskCoreUpdate, deskRecallGet, deskRecallUpdate,
-} from '../../src/tools/deskPanels';
-import { deskRecipeList, deskRecipeExport, deskRecipeCreate, deskRecipeUpdate, deskRecipeDelete } from '../../src/tools/deskRecipes';
+} from '../../src/tools/deskPanels.ts';
+import { deskRecipeList, deskRecipeExport, deskRecipeCreate, deskRecipeUpdate, deskRecipeDelete } from '../../src/tools/deskRecipes.ts';
 import {
   deskWindowCreate, deskWindowList, deskWindowGet, deskWindowUpdate, deskWindowDelete,
   deskFloorEdit, deskWindowTruncate, deskFloorVariant,
-} from '../../src/tools/deskWindows';
-import { deskBacktrackCreate, deskBacktrackList } from './deskBacktrackRoutes';
-import { deskBookSplit, deskBookAuto } from '../../src/tools/deskBook';
-import { studyList, studyGet, studyCreate, studyUpdate, studyDelete, studySearch, studyBackfill } from '../../src/tools/study';
+} from '../../src/tools/deskWindows.ts';
+import { deskBacktrackCreate, deskBacktrackList } from './deskBacktrackRoutes.ts';
+import { deskBookSplit, deskBookAuto } from '../../src/tools/deskBook.ts';
+import { studyList, studyGet, studyCreate, studyUpdate, studyDelete, studySearch, studyBackfill } from '../../src/tools/study.ts';
 import { StudyService } from '../../src/core/studyService.ts';
 import { D1StudyStorage } from './adapters/d1StudyStorage.ts';
 import {
   chaptersList, chapterGet, chapterCreate, chapterUpdate, chapterDelete, chapterRestore, chapterDeletePermanent,
   chapterPublish, chapterUnpublish, chaptersExport,
   commentsList, commentPost, commentDelete,
-} from '../../src/tools/reading';
-import { deskDryrun } from '../../src/chat/deskAssemble';
-import { maybeFoldDeskTimeline } from '../../src/chat/deskTimeline';
-import { deskBoardRefresh } from '../../src/chat/deskBoardRefresh';
-import { handleDeskChat, runMemorySummarize, type DeskChatStorage } from '../../src/chat/desk';
+} from '../../src/tools/reading.ts';
+import { deskDryrun } from '../../src/chat/deskAssemble.ts';
+import { maybeFoldDeskTimeline } from '../../src/chat/deskTimeline.ts';
+import { deskBoardRefresh } from '../../src/chat/deskBoardRefresh.ts';
+import { handleDeskChat, runMemorySummarize, type DeskChatStorage } from '../../src/chat/desk.ts';
   import {
-    listProviders, PROVIDER_REGISTRY_IDS, DESK_PROVIDER_DEFS, deskProviderConfigured, mergeProviderEnv,
+    makeDeskBackend, listProviders, PROVIDER_REGISTRY_IDS, DESK_PROVIDER_DEFS, deskProviderConfigured, mergeProviderEnv,
     resolveDeskProvider, providerModelsUrl, parseProviderModels, isPlaceholderKey,
     type DeskBackendEnv,
-  } from '../../src/adapters/streamModelBackends';
+  } from '../../src/adapters/streamModelBackends.ts';
 import { D1ProviderConfigStore } from './adapters/d1ProviderConfigStore.ts';
 import { D1DeskMemoryStorage } from './adapters/d1DeskMemoryStorage.ts';
 import { D1DiaryStorage } from './adapters/d1DiaryStorage.ts';
-import { diaryDates, diaryList, diaryGet, diaryCreate, diaryUpdate, diaryDelete } from '../../src/tools/diary';
+import { diaryDates, diaryList, diaryGet, diaryCreate, diaryUpdate, diaryDelete } from '../../src/tools/diary.ts';
 import { D1CgStorage } from './adapters/d1CgStorage.ts';
-import { cgList, cgGet, cgCreate, cgUpdate, cgDelete } from '../../src/tools/cg';
-import { stickyNotesList, stickyNotesGet, stickyNotesCreate, stickyNotesUpdate, stickyNotesDelete } from '../../src/tools/stickyNotes';
+import { cgList, cgGet, cgCreate, cgUpdate, cgDelete } from '../../src/tools/cg.ts';
+import { stickyNotesList, stickyNotesGet, stickyNotesCreate, stickyNotesUpdate, stickyNotesDelete } from '../../src/tools/stickyNotes.ts';
 import {
   chapterIndexList, chapterIndexUpsert, chapterIndexDelete,
   styleRefGet, styleRefPut, novelContextRetrieve, chapterIntegrate,
-} from '../../src/tools/chapterMemory';
+} from '../../src/tools/chapterMemory.ts';
 import { D1DailyLoginStore } from './adapters/d1DailyLoginStore.ts';
 import { handleTrpgRoutes } from './trpgRoutes.ts';
 import { handleSaveRoutes } from './saveRoutes.ts';
+import { handleStoryRoutes } from './storyRoutes.ts';
+import { handlePlotRoutes } from './plotRoutes.ts';
+import { handleMcpPost } from './mcp.ts';
+import { buildDiaryPrompt, demoDiary } from '../../src/core/diaryPrompt.ts';
+import { todayDiaryDate, diaryTimeNow, normalizeDiaryDate } from '../../src/core/diaryService.ts';
 import {
   DEFAULT_DAILY_LOGIN_CONFIG, DEFAULT_DAILY_LOGIN_STATE,
   dailyLoginDateKey, parseDailyLoginDateKey, evaluateDailyLogin, nextDailyLoginState,
@@ -219,7 +224,7 @@ function deskAssemblyStorage(env: Env): { deskAssets: D1DeskAssetStorage; deskSt
 interface ProviderConfigRow {
   id: string;
   name: string;
-  protocol: 'openai' | 'anthropic';
+  protocol: 'openai' | 'anthropic' | 'responses';
   source: 'override' | 'env';
   hasApiKey: boolean;
   apiKeyTail: string;
@@ -850,6 +855,225 @@ async function handleDeskAdmin(request: Request, env: Env, url: URL, ctx: Execut
   }
 
 
+    // ----- 日记自动生成（照抄妹居 dirty.md + docs/diary-prompt-template.md 过程还原） -----
+    if (url.pathname === '/api/oc/diary/auto' && request.method === 'POST') {
+      const read = await deskReadJsonLimited(request, { maxBytes: PROSE_LIMIT });
+      if ('resp' in read) return read.resp;
+      const body: any = read.body;
+      const project = typeof body.project === 'string' ? body.project.trim() : '';
+      const charKey = typeof body.charKey === 'string' ? body.charKey.trim() : '';
+      const conversation = Array.isArray(body.conversation) ? body.conversation : [];
+      const conversationId = typeof body.conversationId === 'string' ? body.conversationId : (typeof body.conversation_id === 'string' ? body.conversation_id : '');
+      let characterName = typeof body.characterName === 'string' && body.characterName.trim() ? body.characterName.trim() : (charKey || '');
+      let personality = typeof body.personality === 'string' ? body.personality : '';
+      let affectionLevel = typeof body.affectionLevel === 'string' ? body.affectionLevel : '';
+      const userLabel = typeof body.userLabel === 'string' ? body.userLabel.trim() : (typeof body.user_label === 'string' ? body.user_label.trim() : '');
+      // 若前端没传 personality/characterName，尝试按 charKey 从角色卡（memories lore）里回填，避免“有希/Yuki”硬编码兜底
+      if (charKey && (!personality || !characterName)) {
+        try {
+          const loreRows = await new D1DeskAssetStorage(env.OC_DB).listLore(project);
+          const hit = loreRows.find((r) => r.name === charKey || r.name === characterName) || loreRows.find((r) => r.isCharacter && r.name) || null;
+          if (hit) {
+            if (!characterName) characterName = hit.name || charKey;
+            if (!personality) {
+              const f = (hit.fields || {}) as any;
+              const parts = [f.personality, f.description, hit.content].filter((s: any) => typeof s === 'string' && s.trim());
+              personality = parts.join(' / ').slice(0, 400);
+            }
+          }
+        } catch {}
+      }
+      if (!characterName) characterName = charKey || 'TA';
+      // 未成年护栏：charKey 含 kindergarten/幼龄 或显式 isAdult=false 则强制 false
+      const rawIsAdult = body.isAdult;
+      const isAdult = rawIsAdult === false ? false : (rawIsAdult === true ? true : !/kindergarten|幼|未成年|8岁/i.test(charKey + characterName));
+      const rawDate = typeof body.date === 'string' ? body.date.trim() : '';
+      const dateOverride = normalizeDiaryDate(rawDate);
+      const date = dateOverride || todayDiaryDate();
+      const time = typeof body.time === 'string' && body.time.trim() ? body.time.trim().slice(0, 24) : diaryTimeNow();
+      const allowMulti = body.allowMulti === true;
+      const floorIds = Array.isArray(body.floorIds) ? (body.floorIds as any[]).filter((x: any) => typeof x === 'string' && String(x).trim()).map((x: any) => String(x).trim()).slice(0, 50) : [];
+      const windowIdForCoverage = conversationId || (typeof body.windowId === 'string' ? String(body.windowId).trim() : '') || '';
+      // 重复生成日记防护（task-22）：生成前检验是否已到目标日期且已写过，避免无新数据时复用老对话重复落库
+      try {
+        const existing = await env.OC_DB.prepare(`SELECT id FROM diaries WHERE project = ? AND char_key = ? AND date = ? LIMIT 1`).bind(project, charKey, date).first<any>();
+        if (existing) {
+          if (floorIds.length && windowIdForCoverage) {
+            const cov = await env.OC_DB.prepare(`SELECT id FROM diary_coverage WHERE window_id = ? AND floor_start = ? AND floor_end = ? LIMIT 1`).bind(windowIdForCoverage, floorIds[0], floorIds[floorIds.length - 1]).first<any>().catch(() => null);
+            if (cov) {
+              return json(request, env, { success: false, error: '该对话段已生成过日记（避免重复）', duplicate: true }, 409);
+            }
+          }
+          const isEmptyConversation = !conversation.length || conversation.every((m: any) => !String(m.content || '').trim());
+          if (isEmptyConversation && !floorIds.length) {
+            return json(request, env, { success: false, error: '今日日记已存在且无新对话数据，避免重复生成', duplicate: true }, 409);
+          }
+          if (!allowMulti && !floorIds.length) {
+            return json(request, env, { success: false, error: '该日期日记已存在（同角色同日期仅一篇）', duplicate: true }, 409);
+          }
+        }
+      } catch {}
+      const overrides = await new D1ProviderConfigStore(env.OC_DB).list().catch(() => [] as any);
+      const provider = typeof body.provider === 'string' && body.provider ? body.provider : undefined;
+      const hasModel = provider ? !!resolveDeskProvider(env as any, provider, overrides) : !!(env.OPENAI_API_KEY || env.OPENAI_BASE_URL !== undefined || env.ANTHROPIC_API_KEY);
+      let content = '';
+      let demo = false;
+      if (hasModel) {
+        try {
+          const backend = makeDeskBackend(env as any, provider, overrides as any);
+          const req = buildDiaryPrompt({ characterName, personality, affectionLevel, isAdult, date, time, conversation: conversation.map((m: any) => ({ role: String(m.role || 'assistant'), content: String(m.content || '') })), conversationId, userLabel: userLabel || undefined, allowMulti });
+          const gen = await backend.streamChat({ system: req.system, prompt: req.prompt, model: provider ? (resolveDeskProvider(env as any, provider, overrides as any)?.model || 'deepseek-chat') : String((env as any).OPENAI_MODEL || 'deepseek-chat'), signal: request.signal, onEvent: undefined });
+          if (gen.ok && gen.text.trim()) content = gen.text.trim();
+          else demo = true;
+        } catch { demo = true; }
+      } else demo = true;
+      // 26C aborted 不落库：若前端已终止，后端不再用 demo 兜底落库
+      if (request.signal.aborted) {
+        return json(request, env, { success: false, error: 'aborted', aborted: true }, 499);
+      }
+      if (!content) { content = demoDiary({ characterName, personality, affectionLevel, isAdult, date, time, conversation: conversation.map((m: any) => ({ role: String(m.role || 'assistant'), content: String(m.content || '') })), conversationId, userLabel: userLabel || undefined }); demo = true; }
+      if (request.signal.aborted) {
+        return json(request, env, { success: false, error: 'aborted', aborted: true }, 499);
+      }
+      // 跨天拆多篇：模型按 "---" 分隔多篇日记，逐篇落库（每篇可自带不同的书写时间，解析后覆盖 date/time）
+      if (allowMulti && content.includes('---')) {
+        const parts = content.split(/\n---\n/).map((s: string) => s.trim()).filter(Boolean).slice(0, 3);
+        if (parts.length > 1) {
+          const created: any[] = [];
+          for (const part of parts) {
+            if (request.signal.aborted) {
+              return json(request, env, { success: false, error: 'aborted', aborted: true }, 499);
+            }
+            const m = part.match(/【日记书写时间为\s*([^\]]+)\s*】/);
+            let d = date, t = time;
+            if (m) {
+              const inner = m[1].trim();
+              const segs = inner.split(/\s+/);
+              const nd = normalizeDiaryDate(segs[0]);
+              if (nd) { d = nd; if (segs.length > 1) t = segs.slice(1).join(' ').slice(0, 24); }
+            }
+            const rr = await diaryCreate(env as any, { project, charKey, date: d, time: t, title: body.title || '', content: part, affection: body.affection ?? null, conversationId, conversationLength: conversation.length });
+            if (rr.success) {
+              created.push(rr.diary);
+              if (floorIds.length) {
+                try { await env.OC_DB.prepare(`INSERT INTO diary_coverage (id, diary_id, project, char_key, window_id, floor_start, floor_end, floor_count) VALUES (?,?,?,?,?,?,?,?)`).bind(`dc_${crypto.randomUUID()}`, rr.diary.id, project || null, charKey || null, windowIdForCoverage || null, floorIds[0], floorIds[floorIds.length - 1], floorIds.length).run(); } catch {}
+              } else if (windowIdForCoverage) {
+                try { await env.OC_DB.prepare(`INSERT INTO diary_coverage (id, diary_id, project, char_key, window_id, floor_count) VALUES (?,?,?,?,?,?)`).bind(`dc_${crypto.randomUUID()}`, rr.diary.id, project || null, charKey || null, windowIdForCoverage || null, conversation.length).run(); } catch {}
+              }
+            }
+          }
+          if (created.length) return json(request, env, { success: true, diary: created[0], diaries: created, demo });
+        }
+      }
+      // 单篇落库：直接复用 diaryCreate 的校验与落库路径（date/time/conversationId 等对齐 diaries 表）
+      if (request.signal.aborted) {
+        return json(request, env, { success: false, error: 'aborted', aborted: true }, 499);
+      }
+      const r = await diaryCreate(env as any, { project, charKey, date, time, title: body.title || '', content, affection: body.affection ?? null, conversationId, conversationLength: conversation.length });
+      if (!r.success) return json(request, env, r, 400);
+      if (floorIds.length) {
+        try { await env.OC_DB.prepare(`INSERT INTO diary_coverage (id, diary_id, project, char_key, window_id, floor_start, floor_end, floor_count) VALUES (?,?,?,?,?,?,?,?)`).bind(`dc_${crypto.randomUUID()}`, r.diary.id, project || null, charKey || null, windowIdForCoverage || null, floorIds[0], floorIds[floorIds.length - 1], floorIds.length).run(); } catch {}
+      } else if (windowIdForCoverage) {
+        try { await env.OC_DB.prepare(`INSERT INTO diary_coverage (id, diary_id, project, char_key, window_id, floor_count) VALUES (?,?,?,?,?,?)`).bind(`dc_${crypto.randomUUID()}`, r.diary.id, project || null, charKey || null, windowIdForCoverage || null, conversation.length).run(); } catch {}
+      }
+      return json(request, env, { success: true, diary: r.diary, demo });
+    }
+
+    // ----- Token 用量聚合（供应商下方趋势+分角色/对话） -----
+    if (url.pathname === '/api/oc/usage/summary' && request.method === 'GET') {
+      const days = Math.min(Math.max(Number(url.searchParams.get('days') || 7), 1), 90);
+      const qProject = url.searchParams.get('project') || undefined;
+      const qChar = url.searchParams.get('char_key') || url.searchParams.get('charKey') || undefined;
+      const qWindow = url.searchParams.get('window_id') || url.searchParams.get('windowId') || undefined;
+      const qProvider = url.searchParams.get('provider') || undefined;
+      const qChannel = url.searchParams.get('channel') || undefined;
+      const whereParts: string[] = [`datetime(created_at) >= datetime('now', '-${days} days')`];
+      const vals: unknown[] = [];
+      // 动态 where：列不存在时在 catch 中回落
+      const condAdd = (col: string, v: string) => { whereParts.push(`${col} = ?`); vals.push(v); };
+      if (qProject) condAdd('project', qProject);
+      if (qChar) condAdd('char_key', qChar);
+      if (qWindow) condAdd('window_id', qWindow);
+      if (qProvider) condAdd('provider_id', qProvider);
+      if (qChannel) condAdd('channel', qChannel);
+      const where = whereParts.length ? `WHERE ${whereParts.join(' AND ')}` : '';
+      let rows: any[] = [];
+      try {
+        const r = await env.OC_DB.prepare(`SELECT date(created_at) as d, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, status, channel, model, project, char_key, window_id, provider_id, created_at FROM usage_log ${where} ORDER BY created_at DESC LIMIT 2000`).bind(...vals).all<any>();
+        rows = r.results || [];
+      } catch {
+        // 回落旧表（无新增列）
+        const fallbackWhere: string[] = [`datetime(created_at) >= datetime('now', '-${days} days')`];
+        const fallbackVals: unknown[] = [];
+        if (qChannel) { fallbackWhere.push('channel = ?'); fallbackVals.push(qChannel); }
+        try {
+          const r = await env.OC_DB.prepare(`SELECT date(created_at) as d, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, status, channel, model, created_at FROM usage_log WHERE ${fallbackWhere.join(' AND ')} ORDER BY created_at DESC LIMIT 2000`).bind(...fallbackVals).all<any>();
+          rows = r.results || [];
+        } catch { rows = []; }
+      }
+      // 聚合
+      const byDay = new Map<string, { input: number; output: number; cacheRead: number; cacheWrite: number; count: number; hit: number }>();
+      const byChar = new Map<string, { input: number; output: number; count: number; cacheRead: number }>();
+      const byWindow = new Map<string, { input: number; output: number; count: number; charKey: string; project: string }>();
+      let total = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, count: 0, ok: 0 };
+      for (const r of rows) {
+        const d = String(r.d || String(r.created_at || '').slice(0, 10));
+        const input = Number(r.input_tokens) || 0;
+        const output = Number(r.output_tokens) || 0;
+        const cr = Number(r.cache_read_tokens) || 0;
+        const cw = Number(r.cache_write_tokens) || 0;
+        const ck = String(r.char_key || r.charKey || '') || '(未区分)';
+        const win = String(r.window_id || r.windowId || '') || (r.channel || '') + ':' + (r.model || '');
+        if (!byDay.has(d)) byDay.set(d, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, count: 0, hit: 0 });
+        const day = byDay.get(d)!; day.input += input; day.output += output; day.cacheRead += cr; day.cacheWrite += cw; day.count += 1; day.hit += cr;
+        if (!byChar.has(ck)) byChar.set(ck, { input: 0, output: 0, count: 0, cacheRead: 0 });
+        const cc = byChar.get(ck)!; cc.input += input; cc.output += output; cc.count += 1; cc.cacheRead += cr;
+        if (!byWindow.has(win)) byWindow.set(win, { input: 0, output: 0, count: 0, charKey: ck, project: String(r.project || '') });
+        const ww = byWindow.get(win)!; ww.input += input; ww.output += output; ww.count += 1;
+        total.input += input; total.output += output; total.cacheRead += cr; total.cacheWrite += cw; total.count += 1; if (String(r.status) === 'ok') total.ok += 1;
+      }
+      const daily = Array.from(byDay.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([date, v]) => ({ date, ...v, hitRate: v.input + v.cacheRead + v.cacheWrite ? v.cacheRead / (v.input + v.cacheRead + v.cacheWrite) : 0 }));
+      // 小时分桶（仅用于 Today 小时视图，前端聚合复用 daily 兜底）
+      const byHour = new Map<string, { input: number; output: number; cacheRead: number; cacheWrite: number; count: number }>();
+      for (const r of rows) {
+        const ts = String(r.created_at || '');
+        // ts: "2025-08-29T14:32:00.000Z" -> hourKey "2025-08-29 14:00"
+        const hourKey = ts.length >= 13 ? `${ts.slice(0, 10)} ${ts.slice(11, 13)}:00` : String(r.d || '').slice(0, 10) + ' 00:00';
+        if (!byHour.has(hourKey)) byHour.set(hourKey, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, count: 0 });
+        const h = byHour.get(hourKey)!;
+        h.input += Number(r.input_tokens) || 0;
+        h.output += Number(r.output_tokens) || 0;
+        h.cacheRead += Number(r.cache_read_tokens) || 0;
+        h.cacheWrite += Number(r.cache_write_tokens) || 0;
+        h.count += 1;
+      }
+      const hourly = Array.from(byHour.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([hour, v]) => ({ hour, ...v, total: v.input + v.output + v.cacheRead + v.cacheWrite }));
+      const byCharArr = Array.from(byChar.entries()).map(([charKey, v]) => ({ charKey, ...v, hitRate: v.input + v.cacheRead ? v.cacheRead / (v.input + v.cacheRead) : 0 })).sort((a, b) => (b.input + b.output) - (a.input + a.output)).slice(0, 20);
+      const byWindowArr = Array.from(byWindow.entries()).map(([windowId, v]) => ({ windowId, ...v })).sort((a, b) => (b.input + b.output) - (a.input + a.output)).slice(0, 20);
+      const hitRate = total.input + total.cacheRead + total.cacheWrite ? total.cacheRead / (total.input + total.cacheRead + total.cacheWrite) : 0;
+      return json(request, env, { success: true, rangeDays: days, total: { ...total, hitRate, totalTokens: total.input + total.output + total.cacheRead + total.cacheWrite }, daily, hourly, byChar: byCharArr, byWindow: byWindowArr });
+    }
+
+    // ----- 日记覆盖查询（已写/未覆盖，用于补写时跳过） -----
+    if (url.pathname === '/api/oc/diary/coverage' && request.method === 'GET') {
+      const qProject = url.searchParams.get('project') || undefined;
+      const qChar = url.searchParams.get('char_key') || url.searchParams.get('charKey') || undefined;
+      const qWindow = url.searchParams.get('window_id') || url.searchParams.get('windowId') || undefined;
+      const whereParts: string[] = [];
+      const vals: unknown[] = [];
+      if (qProject) { whereParts.push('project = ?'); vals.push(qProject); }
+      if (qChar) { whereParts.push('char_key = ?'); vals.push(qChar); }
+      if (qWindow) { whereParts.push('window_id = ?'); vals.push(qWindow); }
+      const where = whereParts.length ? `WHERE ${whereParts.join(' AND ')}` : '';
+      try {
+        const r = await env.OC_DB.prepare(`SELECT diary_id, project, char_key, window_id, floor_start, floor_end, floor_count, created_at FROM diary_coverage ${where} ORDER BY created_at DESC LIMIT 500`).bind(...vals).all<any>();
+        return json(request, env, { success: true, coverage: r.results || [] });
+      } catch (e: any) {
+        if (String(e?.message || '').includes('no such table')) return json(request, env, { success: true, coverage: [] });
+        return json(request, env, { success: false, error: e?.message || '查询失败' }, 500);
+      }
+    }
+
     // ----- 日记（按日期 CRUD + 日期刻度时间线；妹居实测格式对齐，见 src/core/diaryService.ts） -----
     if (url.pathname === '/api/oc/diary/dates' && request.method === 'GET') {
       const r = await diaryDates(env as any, {
@@ -1247,11 +1471,11 @@ async function handleDeskAdmin(request: Request, env: Env, url: URL, ctx: Execut
       return json(request, env, { success: false, error: 'id 必须是注册表供应商或 custom:<id>' }, 400);
     }
     const def = isRegistry ? DESK_PROVIDER_DEFS.find((d) => d.id === id) : undefined;
-    if (body.protocol !== undefined && (body.protocol !== 'openai' && body.protocol !== 'anthropic')) {
-      return json(request, env, { success: false, error: 'protocol 只允许 openai 或 anthropic' }, 400);
+    if (body.protocol !== undefined && (body.protocol !== 'openai' && body.protocol !== 'anthropic' && body.protocol !== 'responses')) {
+      return json(request, env, { success: false, error: 'protocol 只允许 openai / anthropic / responses' }, 400);
     }
-    if (isCustom && body.protocol !== undefined && body.protocol !== 'openai' && body.protocol !== 'anthropic') {
-      return json(request, env, { success: false, error: '自定义供应商协议只允许 openai 或 anthropic' }, 400);
+    if (isCustom && body.protocol !== undefined && body.protocol !== 'openai' && body.protocol !== 'anthropic' && body.protocol !== 'responses') {
+      return json(request, env, { success: false, error: '自定义供应商协议只允许 openai / anthropic / responses' }, 400);
     }
     if (isRegistry && body.protocol !== undefined && body.protocol !== def!.protocol) {
       return json(request, env, { success: false, error: `注册表供应商 ${id} 的协议不可修改` }, 400);
@@ -1259,9 +1483,11 @@ async function handleDeskAdmin(request: Request, env: Env, url: URL, ctx: Execut
     const store = new D1ProviderConfigStore(env.OC_DB);
     const existing = await store.get(id);
     // 自定义供应商协议：body.protocol 优先（新开选预设时带上），否则沿用已存的，再兜底 openai。
-    const customProtocol: 'openai' | 'anthropic' = body.protocol === 'anthropic'
+    const customProtocol: 'openai' | 'anthropic' | 'responses' = body.protocol === 'anthropic'
       ? 'anthropic'
-      : (existing && existing.protocol === 'anthropic' ? 'anthropic' : 'openai');
+      : body.protocol === 'responses'
+        ? 'responses'
+        : (existing && (existing.protocol === 'anthropic' || existing.protocol === 'responses') ? existing.protocol as any : 'openai');
     const base: ProviderOverride = existing
       ? { ...existing, protocol: isCustom ? customProtocol : def!.protocol }
       : { id, protocol: isCustom ? customProtocol : def!.protocol };
@@ -1313,7 +1539,7 @@ async function handleDeskAdmin(request: Request, env: Env, url: URL, ctx: Execut
     const read = await deskReadJsonLimited(request, { maxBytes: JSON_LIMIT });
     if ('resp' in read) return read.resp;
     const body = read.body && typeof read.body === 'object' ? read.body : {};
-    let protocol: 'openai' | 'anthropic' = body.protocol === 'anthropic' ? 'anthropic' : 'openai';
+    let protocol: 'openai' | 'anthropic' | 'responses' = body.protocol === 'responses' ? 'responses' : body.protocol === 'anthropic' ? 'anthropic' : 'openai';
     let baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : '';
     let apiKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
     if (typeof body.id === 'string' && body.id.trim()) {
@@ -1428,13 +1654,19 @@ async function handleDeskAdmin(request: Request, env: Env, url: URL, ctx: Execut
     await new D1DailyLoginStore(env.OC_DB).resetState();
     return json(request, env, { success: true, state: DEFAULT_DAILY_LOGIN_STATE });
   }
+  // 26A 剧情双分支 → 小纸条（plotOutline）
+  if (url.pathname.startsWith('/api/oc/plot')) {
+    const r = await handlePlotRoutes(request, env, url);
+    if (r) return r;
+  }
   if (url.pathname.startsWith('/api/oc/trpg')) return handleTrpgRoutes(request, env, url);
   if (url.pathname.startsWith('/api/oc/save')) return handleSaveRoutes(request, env, url);
+  if (url.pathname.startsWith('/api/oc/story')) return handleStoryRoutes(request, env, url);
   if (url.pathname === '/api/oc/desk/chat' && request.method === 'POST') {
     // 附件(图片 base64)会让 body 变大,放宽到 32MB(对齐 import/chat)。
     const read = await deskReadJsonLimited(request, { maxBytes: 32 * 1024 * 1024 });
     if ('resp' in read) return read.resp;
-    const storage: DeskChatStorage = { deskStorage: new D1DeskStorage(env.OC_DB), turnStorage: new D1DeskTurnStorage(env.OC_DB), ...deskAssemblyStorage(env), memory: new D1DeskMemoryStorage(env.OC_DB) };
+    const storage: DeskChatStorage = { deskStorage: new D1DeskStorage(env.OC_DB), turnStorage: new D1DeskTurnStorage(env.OC_DB), ...deskAssemblyStorage(env), memory: new D1DeskMemoryStorage(env.OC_DB), diary: new D1DiaryStorage(env.OC_DB) };
     const overrides = await new D1ProviderConfigStore(env.OC_DB).list();
     return handleDeskChat(env as any, read.body, storage, request.signal, (promise) => ctx.waitUntil(promise), overrides);
   }
@@ -1456,6 +1688,25 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
   // Bearer/scope system (MCP, published reading, comments); this is not a second general auth
   // mode, just this one namespace's own gate.
   const pathParts = url.pathname.split('/').filter((part) => part.length > 0);
+  // MCP via path-token: /{AUTH_TOKEN}/mcp — mirrors admin surface gate, but routes to MCP handler
+  if (pathParts.length >= 2 && pathParts[1] === 'mcp') {
+    if (!env.AUTH_TOKEN || !(await equalSecret(pathParts[0], env.AUTH_TOKEN))) {
+      return json(request, env, { error: 'unauthorized' }, 401);
+    }
+    if (request.method === 'OPTIONS') {
+      const h = corsHeaders(request, env);
+      return new Response(null, { status: 204, headers: h as any });
+    }
+    if (request.method === 'GET') {
+      // Streamable HTTP: GET is SSE stream; P0 返回空 405 提示用 POST
+      return json(request, env, { error: 'method_not_allowed', message: 'MCP Streamable HTTP uses POST; GET SSE not required for P0' }, 405);
+    }
+    if (request.method !== 'POST') return json(request, env, { error: 'method_not_allowed' }, 405);
+    const mcpResp = await handleMcpPost(request, env);
+    // 补 CORS
+    for (const [k, v] of Object.entries(corsHeaders(request, env))) mcpResp.headers.set(k, v as string);
+    return mcpResp;
+  }
   if (pathParts.length >= 3 && pathParts[1] === 'api' && pathParts[2] === 'oc') {
     if (!env.AUTH_TOKEN || !(await equalSecret(pathParts[0], env.AUTH_TOKEN))) {
       return json(request, env, { error: 'unauthorized' }, 401);
@@ -1467,15 +1718,35 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
     return json(request, env, { error: 'not_found' }, 404);
   }
 
+  // MCP via Bearer (OWNER_TOKEN/COMPANION_TOKEN) at /mcp — primary for external Agent
+  if (url.pathname === '/mcp') {
+    if (request.method === 'OPTIONS') {
+      const h = corsHeaders(request, env);
+      return new Response(null, { status: 204, headers: h as any });
+    }
+    if (request.method === 'GET') {
+      return json(request, env, { error: 'method_not_allowed', message: 'MCP Streamable HTTP uses POST; GET SSE not required for P0' }, 405);
+    }
+    if (request.method !== 'POST') return json(request, env, { error: 'method_not_allowed' }, 405);
+    const mcpAuth = await authenticate(request, env);
+    if (!mcpAuth) {
+      const r = json(request, env, { error: 'unauthorized' }, 401);
+      r.headers.set('WWW-Authenticate', 'Bearer');
+      return r;
+    }
+    // MCP 需要 desk 权限（owner 全量，companion 受限）；P0 要求至少 desk:read
+    if (!hasScope(mcpAuth, 'desk:read') && !hasScope(mcpAuth, 'desk:write')) {
+      return json(request, env, { error: 'forbidden', message: 'MCP requires desk:read/desk:write (owner token)' }, 403);
+    }
+    const mcpResp = await handleMcpPost(request, env);
+    for (const [k, v] of Object.entries(corsHeaders(request, env))) mcpResp.headers.set(k, v as string);
+    return mcpResp;
+  }
+
   const auth = await authenticate(request, env);
   const readGate = requireScope(request, env, auth, 'published:read');
   if (readGate) return readGate;
   const actor = auth as AuthContext;
-
-  if (url.pathname === '/mcp') return json(request, env, {
-    error: 'mcp_transport_not_configured',
-    message: 'Embed TavernStudyMcpServer in a host-managed MCP transport and session store.',
-  }, 501);
   if (url.pathname === '/api/v1/published' && request.method === 'GET') {
     const rawLimit = url.searchParams.get('limit');
     return json(request, env, await readingService(env).listPublished({

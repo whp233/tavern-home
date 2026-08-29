@@ -1,6 +1,6 @@
 'use client';
 
-// 酒馆之家「便签」独立房（task-15）。
+// 酒馆之家「便签」独立房（task-15，26E 降草稿：便签不再是主入口，仅作草稿暂存，不入 deskAssemble tail，小纸条为唯一动态注入位）。
 // 轻量便利贴 CRUD：新建/编辑/删除/置顶/颜色/项目角色筛选。
 // 持久化走后端 `/api/oc/sticky-notes`（D1 oc_state，零 schema 迁移）。
 // 入口说明：为避免与 task-13/21 并行窗口抢 page.tsx 热区，本组件先以独立路由

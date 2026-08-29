@@ -9,12 +9,13 @@
 // 「当前」标记 = localStorage.oc_desk_provider(打字桌顶栏「商」弹层也读这一把,两边是同一个默认)。
 
 import { useState, useEffect, useRef } from 'react';
+import TokenUsagePanel from './TokenUsagePanel';
 
 // ── 数据形状(照后端 providerConfigRows / PUT 响应共用 shape) ──
 export type ProviderCfgRow = {
   id: string;
   name: string;
-  protocol: 'openai' | 'anthropic';
+  protocol: 'openai' | 'anthropic' | 'responses';
   source: 'override' | 'env';
   hasApiKey: boolean;
   apiKeyTail: string;
@@ -24,39 +25,43 @@ export type ProviderCfgRow = {
 };
 
 // 新增表单的「选预设」:注册表三个(去掉了 opencode——它不是 OpenAI 兼容渠道,是 env 驱动的内部
-// 供应商,不该出现在"新建"预设里) + 自定义 OpenAI 兼容 + 自定义 Anthropic 兼容。
-// 注册表 id 照 PROVIDER_REGISTRY_IDS,protocol 照 DESK_PROVIDER_DEFS;自定义支持 openai/anthropic。
+// 供应商,不该出现在"新建"预设里) + 自定义 OpenAI 兼容 + 自定义 Anthropic 兼容 + 自定义 Responses。
+// 注册表 id 照 PROVIDER_REGISTRY_IDS,protocol 照 DESK_PROVIDER_DEFS;自定义支持 openai/anthropic/responses。
 type PresetDef = {
   key: string;
   label: string;
   id?: string;
-  protocol: 'openai' | 'anthropic';
+  protocol: 'openai' | 'anthropic' | 'responses';
   custom?: boolean;
 };
 const PRESETS: PresetDef[] = [
   { key: 'anthropic', label: 'Anthropic', id: 'anthropic', protocol: 'anthropic' },
   { key: 'deepseek', label: 'DeepSeek', id: 'deepseek', protocol: 'openai' },
   { key: 'siliconflow', label: '硅基流动', id: 'siliconflow', protocol: 'openai' },
-  { key: 'custom', label: '自定义 OpenAI 兼容', custom: true, protocol: 'openai' },
+  { key: 'custom', label: '自定义 OpenAI 兼容 (chat)', custom: true, protocol: 'openai' },
   { key: 'custom-anthropic', label: '自定义 Anthropic 兼容', custom: true, protocol: 'anthropic' },
+  { key: 'custom-responses', label: '自定义 Responses 兼容', custom: true, protocol: 'responses' },
 ];
 const PROTOCOL_LABEL: Record<ProviderCfgRow['protocol'], string> = {
   openai: 'OpenAI 兼容',
   anthropic: 'Anthropic',
+  responses: 'Responses',
 };
 
 // 各预设的官方 Base URL(选预设时自动填,包括默认 DeepSeek 的初始值)。Anthropic 的 baseUrl 是
-// 完整 Messages 端点,OpenAI 兼容渠道是 API base(后端 openAiEndpoint 会再补 /chat/completions)。
+// 完整 Messages 端点,OpenAI 兼容渠道是 API base(后端 openAiEndpoint 会再补 /chat/completions / /responses)。
 const BASE_URL_HINTS: Record<string, string> = {
   anthropic: 'https://api.anthropic.com/v1/messages',
   deepseek: 'https://api.deepseek.com/v1',
   siliconflow: 'https://api.siliconflow.cn/v1',
   custom: '',
   'custom-anthropic': 'https://api.anthropic.com/v1/messages',
+  'custom-responses': '',
 };
 const BASE_URL_PLACEHOLDER: Record<string, string> = {
   custom: '你的 OpenAI 兼容网关地址，如 https://…/v1',
   'custom-anthropic': '你的 Anthropic 兼容网关 Messages 端点，如 https://…/v1/messages',
+  'custom-responses': '你的 Responses 兼容网关地址，如 https://…/v1',
 };
 const DEFAULT_PRESET_KEY = 'deepseek';
 
@@ -88,7 +93,7 @@ const monoStyle: React.CSSProperties = { fontFamily: "'JetBrains Mono', ui-monos
 // 靠它走后端已存的 key；apiKey/baseUrl 填了就优先用表单里的(新建态/正在改 key 时)。
 function ModelFetch({ base, protocol, baseUrl, apiKey, savedId, onPick }: {
   base: string;
-  protocol: 'openai' | 'anthropic';
+  protocol: 'openai' | 'anthropic' | 'responses';
   baseUrl?: string;
   apiKey?: string;
   savedId?: string;
@@ -143,7 +148,7 @@ function ModelFetch({ base, protocol, baseUrl, apiKey, savedId, onPick }: {
 // 参数同 ModelFetch：savedId = 已存供应商 id（没改 key 时用），baseUrl/apiKey 填了优先用表单里的。
 function TestConnect({ base, protocol, baseUrl, apiKey, savedId }: {
   base: string;
-  protocol: 'openai' | 'anthropic';
+  protocol: 'openai' | 'anthropic' | 'responses';
   baseUrl?: string;
   apiKey?: string;
   savedId?: string;
@@ -532,6 +537,9 @@ export default function ProviderConfigRoom({ base, envOk, onChanged, onGoBack }:
           })
         )}
       </div>
+
+      {/* Token 消耗（供应商下方） */}
+      <TokenUsagePanel base={base} envOk={envOk} />
 
       {/* 新增供应商 */}
       <div className="card" style={{ ...glassCardStyle, padding: '20px 24px' }}>

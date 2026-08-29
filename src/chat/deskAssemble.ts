@@ -16,6 +16,7 @@ import type { DeskRegexRule } from '../tools/deskMacro.ts';
 import { addMentionedCharactersToPresence, buildLoreScanCorpus, resolveAtMentionIds } from '../core/loreTrigger.ts';
 import { DESK_TIMELINE_KEEP } from '../core/deskLimits.ts';
 import type { DeskAssetStorage, DeskStoryStorage, SemanticSearchAdapter } from '../core/storage.ts';
+import { extractPortraitFromRendered, YELLOW_ANCHOR_PHRASE } from '../core/deskMemory.ts';
 
 export interface DeskAssembleEnv {
   OC_DB?: D1Database;
@@ -45,6 +46,10 @@ export interface AssembleParams {
   // 调用方传入已渲染的记忆段落（打字桌记忆模块），注入故事水流里情节核心之后。
   // 只进 tail 不进 cacheable 前缀，避免时钟/随对话变化时破坏"稳定前缀"字节一致性。
   memories?: string;
+  // task-30 多选带入生成：外部传入选中角色集合（与 vars.selected_char_keys 互为补充）
+  selectedCharKeys?: string[];
+  selected_char_keys?: string[];
+  charKeys?: string[];
 }
 
 // 状态板指令是稳定 system 前缀的一部分。协议围栏必须位于回复末尾，否则按正文处理。
@@ -54,6 +59,22 @@ const STATEBOARD_INSTRUCTION =
   '键固定为在场角色/衣装/位置/关系/时间地点五项;五项均按本楼结束时刻的实际状态如实更新——人物离场就从「在场角色」移除(仅被提及、回忆、口述的人物不计入在场),场景移动了「位置」「时间地点」要跟着走,更衣了「衣装」要改;某项这楼确实没有变化,就把当前值原样带一遍,不要省略这个块。' +
   '若板子里已有「未收伏笔」键,每楼同步维护它:新埋下的线索、未兑现的约定、悬而未答的问题添进去,已收线的移除,已经失效或被剧情绕过的也一并移除;全键最多保留7条,超出时合并同类、优先保留对后续剧情最要紧的;注意区分"计划未执行"和"事件已发生",整个键不许自行删除;板上没有这个键就不要自己发明。' +
   '这个围栏必须是这次回复的最后一行结束,围栏之后不许再写任何字。';
+
+// 躯感优先块（26E）：system 末稳定前缀，先躯感再情节
+export const BODILY_FOCUS_INSTRUCTION =
+  '【躯感优先】先写 1-2 句身体/感官/情绪的当下感受（触觉、温度、呼吸、心跳、气味、视线、姿态），再展开情节与对话。躯感句要具体、短、贴近此刻场景，忌空话套话；情节句再接因果与动作。若本轮无身体可写，以“静默的躯感”一句带过，不硬编。';
+
+// 黄文配方·画像协同（task-29）：判断黄文轻配方
+function isYellowRecipe(recipe: any): boolean {
+  if (!recipe || typeof recipe.lightSystem !== 'string') return false;
+  if (recipe.lightSystem.includes(YELLOW_ANCHOR_PHRASE)) return true;
+  const name = typeof recipe.name === 'string' ? recipe.name : '';
+  return name.includes('黄文') || name.includes('体验流');
+}
+
+// 种子隔离：优先级声明（26E T8），system 末声明用户指令优先
+export const SEED_PRIORITY_INSTRUCTION =
+  '【优先级声明】用户本轮指令 > 窗口设定（小纸条/状态板）> 全局设定；冲突时以用户本轮指令为准。';
 
 // ===== token 粗估：字符数/3 上取整，不接 tokenizer =====
 export function estTokens(text: string): number {
@@ -353,9 +374,28 @@ export async function assembleDesk(env: DeskAssembleEnv, params: AssembleParams)
   );
   const presenceRaw = (stateBoard || {})['在场角色'] ?? (stateBoard || {}).presence;
   const presenceCorpus = presenceText(presenceRaw);
+  // task-30 多选带入生成：选中集合强制注入（params 与 vars 双源，vars 为持久化主源）
+  const selectedFromParams: string[] = (() => {
+    const a: any = (params as any).selectedCharKeys ?? (params as any).selected_char_keys ?? (params as any).charKeys;
+    if (Array.isArray(a)) return a.filter((x: any) => typeof x === 'string' && String(x).trim()).map((x: string) => String(x).trim());
+    if (typeof a === 'string' && String(a).trim()) return [String(a).trim()];
+    return [];
+  })();
+  const selectedFromVars: string[] = (() => {
+    const v: any = (windowVars as any).selected_char_keys ?? (windowVars as any).selectedCharKeys ?? (windowVars as any).selected_charkeys;
+    if (Array.isArray(v)) return v.filter((x: any) => typeof x === 'string' && String(x).trim()).map((x: string) => String(x).trim());
+    if (typeof v === 'string' && String(v).trim()) return [String(v).trim()];
+    return [];
+  })();
+  const selectedCharKeysAll = Array.from(new Set([...selectedFromParams, ...selectedFromVars]));
+  const selectedCharSet = new Set(selectedCharKeysAll);
   // presence 模式只看结构化在场名单；scan 模式另看正文子串，避免单字角色名被散文误触。
   const activeCards = loreRows.filter((c) => {
     if (!c.is_char) return false;
+    // task-30 选中块强制命中
+    if (selectedCharSet.has(String(c.name))) return true;
+    const selKeys = Array.isArray((c as any).keys) ? (c as any).keys : [];
+    for (const k of selKeys) if (selectedCharSet.has(String(k))) return true;
     if (atHit(c)) return true;
     const names = [c.name, ...(c.keys || [])].filter(Boolean);
     if (matchLoreKeys(presenceCorpus, names)) return true;
@@ -449,6 +489,8 @@ export async function assembleDesk(env: DeskAssembleEnv, params: AssembleParams)
   }
 
   // 状态板指令追加在 system 稳定前缀末尾(轻/重两态都要),见文件顶 STATEBOARD_INSTRUCTION 注释
+  system.push({ text: BODILY_FOCUS_INSTRUCTION, cache: true });
+  system.push({ text: SEED_PRIORITY_INSTRUCTION, cache: true });
   system.push({ text: STATEBOARD_INSTRUCTION, cache: true });
 
   // ===== 故事水流：近期章→时光带→近景，中间不插非故事块 =====
@@ -575,6 +617,14 @@ export async function assembleDesk(env: DeskAssembleEnv, params: AssembleParams)
   // 记忆注入：放在情节核心之后、往事/时光带之前——这些都是"该记住的静态事实",与故事水流并列。
   const memoriesText = includeHistory && typeof params.memories === 'string' ? params.memories : '';
 
+  // 画像协同（task-29）：黄文配方且通用区有用户画像时，额外注入画像偏好为 system 块（不污染 memories 原文，优雅降级）
+  if (includeHistory && isYellowRecipe(recipe) && memoriesText) {
+    const portraitSnippet = extractPortraitFromRendered(memoriesText);
+    if (portraitSnippet) {
+      system.push({ text: `【用户画像偏好】\n${portraitSnippet.slice(0, 800)}`, cache: true });
+    }
+  }
+
   // 导演纸条按 noteDepth 插入近景楼层；无楼层时放在 post-blocks 后、状态板前。
   const floorLines = floors.map((f) => {
     const speaker = f.role === 'user' ? ctxUser : ctxChar;
@@ -598,7 +648,10 @@ export async function assembleDesk(env: DeskAssembleEnv, params: AssembleParams)
 
   afterParts.push(input); // 本楼输入殿后
 
-  const tail = [...preTailParts, ...streamParts, ...afterParts].filter((s) => s && s.trim()).join('\n\n');
+  // 26E T8 种子隔离：tail 首插 [用户本轮指令] 块（input 原样隔离），优先级由 system 末声明
+  const seedBlock = input && input.trim() ? `[用户本轮指令]\n${input.trim()}` : '';
+  const tailParts = seedBlock ? [seedBlock, ...preTailParts, ...streamParts, ...afterParts] : [...preTailParts, ...streamParts, ...afterParts];
+  const tail = tailParts.filter((s) => s && s.trim()).join('\n\n');
 
   const blocksReport = [...preBlocksReport, ...postBlocksReport];
   const loreHits = Array.from(new Set([...loreHitNames, ...inSceneCardNames]));

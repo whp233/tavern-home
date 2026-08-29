@@ -45,6 +45,10 @@ const STANDARD_SLOT_HINTS: Record<string, string> = {
   chatExamples: '装入在场角色示例对话',
   chatHistory: '装入核心记忆、召回章节、近期章、时光带与窗口楼层',
 };
+// 黄文配方·松紧实验（task-29）：与 src/core/deskMemory 同步
+const YELLOW_ANCHOR_PHRASE = '注重角色体验和动作';
+const YELLOW_LIGHT_SOFT = '注重角色体验和动作，兼顾男方感觉与女方反应。氛围松弛、留白，细腻心理与感官余韵为主，不过度直给，注重情绪铺垫与身体感的层层递进。';
+const YELLOW_LIGHT_TIGHT = '注重角色体验和动作，兼顾男方感觉与女方反应。节奏紧凑、感官强烈、直接有力，动作描写具体，反应鲜明，不过度铺垫，直击体验核心。';
 type LoreRow = {
   // category:世界书收 world(设定)+outline(大纲)两类,大纲行靠它上徽章认脸;
   // 旧版接口没有这个字段,设成可选、缺省当 world 看待。
@@ -160,6 +164,22 @@ function PresetEmptyGuide({ base, envOk, onImported }: { base: string; envOk: bo
     }
   }
 
+  async function importYellow() {
+    setBusy(true); setError('');
+    try {
+      const res = await fetch('/presets/yellow-experience.json');
+      if (!res.ok) throw new Error(`黄文配方预设拉取失败(HTTP ${res.status})——前端静态资源没跟上`);
+      const json: any = await res.json().catch(() => null);
+      if (!json || typeof json !== 'object') throw new Error('黄文配方预设不是合法的 JSON');
+      await importPresetJson('黄文·体验流（自用）', json);
+      onImported();
+    } catch (e: any) {
+      setError(e.message || '导入失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onOwnFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -190,8 +210,14 @@ function PresetEmptyGuide({ base, envOk, onImported }: { base: string; envOk: bo
         <button onClick={importDefault} disabled={busy} style={{ ...btnPrimaryStyle, opacity: busy ? 0.5 : 1 }}>
           {busy ? '导入中…' : '一键导入内置默认'}
         </button>
+        <button onClick={importYellow} disabled={busy} style={{ ...btnGhostStyle, opacity: busy ? 0.5 : 1 }}>
+          {busy ? '导入中…' : '一键导入黄文·体验流'}
+        </button>
         <button onClick={() => fileRef.current?.click()} disabled={busy} style={{ ...btnGhostStyle, opacity: busy ? 0.5 : 1 }}>导入自己的预设包</button>
         <input ref={fileRef} type="file" accept="application/json,.json" onChange={onOwnFile} disabled={busy} style={{ display: 'none' }} />
+      </div>
+      <div style={{ fontSize: 11.5, color: 'var(--ink2)', lineHeight: 1.7 }}>
+        黄文·体验流：轻量锚点“注重角色体验和动作，兼顾男方感觉与女方反应”，松/紧两版已内置在同一预设包（松默认启用，紧备用），在配方编辑区可开关对比；轻配方时 light_system 同步写入该锚点。无说教式红线。
       </div>
       {error && <div style={{ fontSize: 11.5, color: errColor }}>{error}</div>}
       <div style={{ fontSize: 11.5, color: 'var(--ink2)', lineHeight: 1.7 }}>
@@ -312,6 +338,28 @@ function BlocksTab({ base, envOk, project, onDirtyChange, onRegexChanged, onOver
   }, [base, envOk]);
 
   useEffect(() => { loadPresets(); }, [loadPresets]);
+
+  // 黄文·体验流 快捷导入（与 PresetEmptyGuide 复用同一后端口，不新增路由）
+  const [yellowBusy, setYellowBusy] = useState(false);
+  const [yellowError, setYellowError] = useState('');
+  const hasYellowPreset = presets.some((p) => p.name.includes('黄文') || p.name.includes('体验流'));
+  async function importYellowPreset() {
+    if (yellowBusy || presetsLoading || !!presetsError) return;
+    setYellowBusy(true); setYellowError('');
+    try {
+      const res = await fetch('/presets/yellow-experience.json');
+      if (!res.ok) throw new Error(`黄文配方预设拉取失败(HTTP ${res.status})`);
+      const json: any = await res.json().catch(() => null);
+      if (!json || typeof json !== 'object') throw new Error('黄文配方预设不是合法 JSON');
+      const imp = await fetch(`${base}/api/oc/desk/import/preset?${new URLSearchParams({ name: '黄文·体验流（自用）' })}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(json),
+      });
+      const d = await imp.json().catch(() => null);
+      if (!imp.ok || !d || d.success !== true) throw new Error(d?.error || '导入失败');
+      await loadPresets();
+    } catch (e: any) { setYellowError(e.message || '导入失败'); }
+    finally { setYellowBusy(false); }
+  }
 
   useEffect(() => {
     if (!envOk) { setError('环境变量没配好'); setLoading(false); return; }
@@ -841,6 +889,16 @@ function BlocksTab({ base, envOk, project, onDirtyChange, onRegexChanged, onOver
         {/* 无声守卫=故障:recipeDeleting在飞时明说编辑区被冻住,别让人以为积木编辑器坏了 */}
         {recipeDeleting && <span style={{ fontSize: 12, color: 'var(--ink2)' }}>正在删除这份配方,编辑暂时锁定…</span>}
       </div>
+      {!presetsLoading && !presetsError && !hasYellowPreset && (
+        <div style={{ ...cardStyle, padding: '12px 14px', marginBottom: 16, background: 'var(--scale-0)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, color: 'var(--ink-body)' }}>还没导入“黄文·体验流”？</span>
+          <button onClick={importYellowPreset} disabled={yellowBusy} style={{ ...btnPrimaryStyle, opacity: yellowBusy ? 0.5 : 1, fontSize: 12, padding: '6px 12px' }}>
+            {yellowBusy ? '导入中…' : '一键导入黄文·体验流（自用）'}
+          </button>
+          <span style={{ fontSize: 11.5, color: 'var(--ink2)' }}>松/紧两版锚点已内置，可对比</span>
+          {yellowError && <span style={{ fontSize: 11.5, color: errColor }}>{yellowError}</span>}
+        </div>
+      )}
 
       {creating && (
         <div style={{ ...cardStyle, padding: '14px 16px', marginBottom: 18, background: 'var(--scale-0)' }}>
@@ -903,13 +961,40 @@ function BlocksTab({ base, envOk, project, onDirtyChange, onRegexChanged, onOver
             ))}
           </div>
           {weight === 'light' && (
-            <textarea
-              value={lightSystem}
-              onChange={(e) => { if (recipeDeleting) return; setLightSystem(e.target.value); editRevRef.current += 1; setDirty(true); setSaved(false); }}
-              disabled={recipeDeleting}
-              placeholder="轻配方的 1-2k 薄 system(官端手感;这段文字就是唯一的system块,不装配队列)"
-              style={{ ...inputStyle, minHeight: 100, resize: 'vertical', marginBottom: 16, lineHeight: 1.6, opacity: recipeDeleting ? 0.6 : 1 }}
-            />
+            <>
+              {/* 松/紧实验一键切换（task-29）：便于对比哪版更带感，切 light_system 文案并立即生效 */}
+              <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 11.5, color: 'var(--ink2)' }}>黄文·松紧：</span>
+                {[
+                  { key: 'soft', label: '松版', text: YELLOW_LIGHT_SOFT },
+                  { key: 'tight', label: '紧版', text: YELLOW_LIGHT_TIGHT },
+                ].map((opt) => {
+                  const active = lightSystem === opt.text;
+                  return (
+                    <button
+                      key={opt.key}
+                      onClick={() => { if (recipeDeleting) return; if (lightSystem === opt.text) return; setLightSystem(opt.text); editRevRef.current += 1; setDirty(true); setSaved(false); }}
+                      disabled={recipeDeleting}
+                      style={{
+                        fontSize: 11.5, padding: '5px 12px', borderRadius: 10, cursor: recipeDeleting ? 'default' : 'pointer',
+                        background: active ? 'var(--accent)' : 'var(--card-bg)', color: active ? '#fff' : 'var(--ink-body)',
+                        border: active ? '1px solid transparent' : '1px solid var(--line-soft)', opacity: recipeDeleting ? 0.6 : 1,
+                      }}
+                    >
+                      {opt.label}{active ? ' ✓' : ''}
+                    </button>
+                  );
+                })}
+                <span style={{ fontSize: 11, color: 'var(--ink2)' }}>一键切换松/紧文案，保存后新窗即生效</span>
+              </div>
+              <textarea
+                value={lightSystem}
+                onChange={(e) => { if (recipeDeleting) return; setLightSystem(e.target.value); editRevRef.current += 1; setDirty(true); setSaved(false); }}
+                disabled={recipeDeleting}
+                placeholder="轻配方的 1-2k 薄 system(官端手感;这段文字就是唯一的system块,不装配队列) — 黄文配方可用上方松/紧一键切换"
+                style={{ ...inputStyle, minHeight: 100, resize: 'vertical', marginBottom: 16, lineHeight: 1.6, opacity: recipeDeleting ? 0.6 : 1 }}
+              />
+            </>
           )}
 
           {blocksLoading ? (
@@ -2476,6 +2561,72 @@ function ImportTab({ base, envOk, project, onRegexChanged, currentWindowId }: { 
   );
 }
 
+function CreateLoreTab({ base, envOk, project }: { base: string; envOk: boolean; project: string }) {
+  const [title, setTitle] = useState('');
+  const [content, setContent] = useState('');
+  const [trigger, setTrigger] = useState<LoreTriggerValue>(() => ({ keysText: '', position: 'char', isChar: true, constant: false, presenceOnly: false, fields: {} }));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [ok, setOk] = useState('');
+
+  async function onCreate() {
+    if (!title.trim()) { setError('标题（角色名/词条名）不能空'); return; }
+    if (!content.trim()) { setError('正文不能空'); return; }
+    setSaving(true); setError(''); setOk('');
+    try {
+      if (!envOk) throw new Error('环境变量没配好');
+      const body: any = {
+        project,
+        category: 'world',
+        title: title.trim(),
+        tags: [],
+        content: content.trim(),
+        chapter: '',
+        keys: triggerKeysFromText(trigger.keysText),
+        position: trigger.position,
+        is_char: trigger.isChar,
+        constant: trigger.constant,
+        trigger_mode: triggerModeForSave(trigger.isChar, trigger.presenceOnly),
+        fields: trigger.fields,
+      };
+      const res = await fetch(`${base}/api/oc/memories`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d || d.success === false) throw new Error(d?.error || '创建失败');
+      setOk(`已创建「${title.trim()}」${trigger.isChar ? '（角色卡）' : '（世界书）'}，可在世界书浮窗/书架看到，id ${d.id}`);
+      setTitle(''); setContent(''); setTrigger((prev) => ({ ...prev, keysText: '', fields: {} }));
+    } catch (e: any) {
+      setError(e.message || '创建失败');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: 'var(--ink2)', lineHeight: 1.7, marginBottom: 12 }}>
+        直接新建角色卡/世界书条目，跟酒馆里“新建角色/新建世界书”一样——<b>不走导入</b>，建完即落在当前项目「{project}」的世界书里，打字桌下一次装配就能用。想从文件来走「导入」。
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div>
+          <div style={fieldLabelStyle}>标题（角色名 / 词条名）</div>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="如：莉莉丝 / 琉璃塔设定" style={inputStyle} maxLength={200} />
+        </div>
+        <div>
+          <div style={fieldLabelStyle}>正文<span style={{ marginLeft: 6, opacity: 0.8 }}>角色卡的完整设定正文；留空 Description 时 GM/日记会回退用这段</span></div>
+          <textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder="写角色的外貌/性格/背景/口吻，或世界书条目的完整内容" style={{ ...inputStyle, minHeight: 160, resize: 'vertical', lineHeight: 1.7 }} maxLength={200000} />
+        </div>
+        <LoreTriggerFields value={trigger} onChange={(patch) => setTrigger((prev) => ({ ...prev, ...patch }))} />
+        {error && <div style={{ fontSize: 12, color: errColor }}>{error}</div>}
+        {ok && <div style={{ fontSize: 12, color: 'var(--accent)' }}>{ok}</div>}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button onClick={onCreate} disabled={saving} style={{ ...btnPrimaryStyle, opacity: saving ? 0.6 : 1 }}>{saving ? '创建中…' : `新建${trigger.isChar ? '角色卡' : '世界书'}`}</button>
+          <span style={{ fontSize: 11.5, color: 'var(--ink2)' }}>建在项目「{project}」· 分类 world{trigger.isChar ? ' · 角色卡位' : ''}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ══════════════════════════════════════════ 抽屉外壳 ══════════════════════════════════════════
 // 第二批(拍板 #7):文具盒只剩"机器怎么处理"那一类——预设/正则/导入(≈酒馆的分法)。
 // 世界书和核心记忆都属于"这个东西是什么",跟内容走,已经抬进顶栏那颗「世」的浮窗(LoreWindow.tsx)。
@@ -2483,6 +2634,7 @@ const TABS = [
   { key: 'blocks', label: '积木/配方' },
   { key: 'regex', label: '正则' },
   { key: 'import', label: '导入' },
+  { key: 'create', label: '新建' },
 ] as const;
 type TabKey = typeof TABS[number]['key'];
 // 挂载方(TypingDesk 顶栏「文」/「世」两颗钮)要指定开在哪一页,得认得这个联合类型
@@ -2841,6 +2993,7 @@ const DeskDrawerHub = forwardRef<DeskDrawerHandle, {
           {tab === 'blocks' && <BlocksTab key={project} base={base} envOk={envOk} project={project} onDirtyChange={setBlocksDirty} onRegexChanged={onRegexChanged} onOverlayOpenChange={setBlocksOverlayOpen} />}
           {tab === 'regex' && <RegexTab base={base} envOk={envOk} onRegexChanged={onRegexChanged} />}
           {tab === 'import' && <ImportTab base={base} envOk={envOk} project={project} onRegexChanged={onRegexChanged} currentWindowId={currentWindowId} />}
+          {tab === 'create' && <CreateLoreTab base={base} envOk={envOk} project={project} />}
         </div>
       </div>
     </>

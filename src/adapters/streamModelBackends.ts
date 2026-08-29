@@ -104,6 +104,7 @@ export interface DeskBackendEnv {
 const USER_ID = 'tavern-study-desk';
 
 const DEFAULT_OPENAI_URL = 'https://api.deepseek.com/v1/chat/completions';
+const DEFAULT_RESPONSES_URL = 'https://api.openai.com/v1/responses';
 
 // OpenAI 兼容端点闸:复刻 safeEndpoint 逻辑(只认 https、拒绝 URL 内嵌凭据),但 allowHttpLocalhost
 // 时额外放开 http: 且 host ∈ {localhost,127.0.0.1,::1}(opencode serve 是本地 http 服务)。
@@ -118,6 +119,20 @@ export function openAiEndpoint(baseUrl: string | undefined, allowHttpLocalhost =
   if (url.protocol !== 'https:' && !isLocalhost) return null;
   const path = url.pathname.replace(/\/+$/, '');
   url.pathname = path.endsWith('/chat/completions') ? path : `${path}/chat/completions`;
+  return url.toString();
+}
+
+export function responsesEndpoint(baseUrl: string | undefined, allowHttpLocalhost = false): string | null {
+  if (baseUrl === undefined) return DEFAULT_RESPONSES_URL;
+  let url: URL; try { url = new URL(baseUrl); } catch { return null; }
+  if (url.username || url.password) return null;
+  const host = url.hostname.replace(/^\[|\]$/g, '');
+  const isLocalhost = allowHttpLocalhost && url.protocol === 'http:' && (host === 'localhost' || host === '127.0.0.1' || host === '::1');
+  if (url.protocol !== 'https:' && !isLocalhost) return null;
+  const path = url.pathname.replace(/\/+$/, '');
+  if (path.endsWith('/responses')) url.pathname = path;
+  else if (path.endsWith('/chat/completions')) url.pathname = path.replace(/\/chat\/completions$/, '/responses');
+  else url.pathname = `${path}/responses`;
   return url.toString();
 }
 
@@ -141,7 +156,7 @@ function openAiParams(args: StreamChatArgs, options: OpenAIStreamBackendOptions)
       { role: 'user', content: buildOpenAiUserContent(args) },
     ],
     stream: true,
-    max_tokens: options.maxTokens ?? 8000,
+    max_tokens: options.maxTokens ?? 16000,
   };
   if (options.temperature !== undefined) body.temperature = options.temperature;
   if (options.streamUsage !== false) body.stream_options = { include_usage: true };
@@ -221,6 +236,85 @@ export class OpenAIStreamBackend implements ModelBackend {
   }
 }
 
+// ===== OpenAI Responses 流式后端 (/v1/responses) =====
+export interface OpenAIResponsesBackendOptions {
+  apiKey: string;
+  baseUrl?: string;
+  timeoutMs?: number;
+  model?: string;
+  maxTokens?: number;
+  allowHttpLocalhost?: boolean;
+  fetch?: Fetcher;
+}
+
+function responsesParams(args: StreamChatArgs, options: OpenAIResponsesBackendOptions): Record<string, any> {
+  const input: Array<Record<string, unknown>> = [
+    { role: 'system', content: args.system.map((b) => b.text).join('\n\n') },
+    { role: 'user', content: buildOpenAiUserContent(args) as any },
+  ];
+  const body: Record<string, any> = {
+    model: options.model || args.model,
+    input,
+    stream: true,
+    max_output_tokens: options.maxTokens ?? 16000,
+  };
+  return body;
+}
+
+export class OpenAIResponsesBackend implements ModelBackend {
+  private readonly options: OpenAIResponsesBackendOptions;
+  constructor(options: OpenAIResponsesBackendOptions) { this.options = options; }
+  async streamChat(args: StreamChatArgs): Promise<StreamChatResult> {
+    const endpoint = responsesEndpoint(this.options.baseUrl, this.options.allowHttpLocalhost);
+    if (!this.options.apiKey || !endpoint) return { ok: false, kind: 'config' };
+    const controller = new AbortController(); let timedOut = false; const abort = () => controller.abort();
+    args.signal?.addEventListener('abort', abort, { once: true }); if (args.signal?.aborted) controller.abort();
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, this.options.timeoutMs ?? 480_000);
+    let text = ''; let thinking = ''; const usage = ZERO_USAGE(); let streamError = false; let completed = false; let failedReason = '';
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null; let naturalEof = false;
+    const splitter = createLiteralThinkingSplitter(args.model,
+      async (chunk) => { if (!chunk) return; text += chunk; await args.onEvent?.({ type: 'text', text: chunk }); },
+      async (chunk) => { if (!chunk) return; thinking += chunk; await args.onEvent?.({ type: 'thinking', text: chunk }); }, true);
+    try {
+      const response = await (this.options.fetch || fetch)(endpoint, { method: 'POST', headers: { authorization: `Bearer ${this.options.apiKey}`, 'content-type': 'application/json' }, body: JSON.stringify(responsesParams(args, this.options)), signal: controller.signal });
+      if (!response.ok || !response.body) return { ok: false, kind: 'http', detail: String(response.status) };
+      reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
+      const consume = async (line: string) => {
+        const trimmed = line.trim(); if (!trimmed.startsWith('data:')) return; const raw = trimmed.slice(5).trim(); if (!raw || raw === '[DONE]') return;
+        let event: any; try { event = JSON.parse(raw); } catch { return; }
+        if (event.error) { streamError = true; failedReason = String(event.error.message || event.error); return; }
+        const t = String(event.type || '');
+        if (t === 'response.output_text.delta' && typeof event.delta === 'string') {
+          await splitter.feed(event.delta);
+        } else if (t === 'response.reasoning.delta' && typeof event.delta === 'string') {
+          thinking += event.delta; await args.onEvent?.({ type: 'thinking', text: event.delta });
+        } else if (t === 'response.output_text.done' && typeof event.text === 'string' && !text) {
+          await splitter.feed(event.text);
+        } else if (t === 'response.completed' || t === 'response.done') {
+          const u = event.response?.usage || event.usage || {};
+          usage.input = Number(u.input_tokens ?? u.prompt_tokens) || usage.input;
+          usage.output = Number(u.output_tokens ?? u.completion_tokens) || usage.output;
+          usage.cacheRead = Number(u.input_tokens_details?.cached_tokens ?? 0) || usage.cacheRead;
+          completed = true;
+        } else if (t === 'response.failed' || t === 'error') {
+          streamError = true; failedReason = String(event.error?.message || t);
+        }
+      };
+      while (true) { const { done, value } = await reader.read(); if (done) { naturalEof = true; break; } buffer += decoder.decode(value, { stream: true }); const lines = buffer.split('\n'); buffer = lines.pop() || ''; for (const line of lines) await consume(line); }
+      buffer += decoder.decode(); if (buffer) await consume(buffer); await splitter.flush(); await args.onEvent?.({ type: 'usage', usage });
+      if (args.signal?.aborted) return { ok: false, kind: 'aborted', usage };
+      if (streamError) return { ok: false, kind: 'protocol', detail: failedReason || 'response failed', usage };
+      if (!completed) return { ok: false, kind: 'protocol', detail: 'missing response.completed', usage };
+      if (!text) return { ok: false, kind: 'empty', usage };
+      return { ok: true, terminal: 'clean', text, thinking, usage, stopReason: 'stop' };
+    } catch (error: any) {
+      if (args.signal?.aborted) return { ok: false, kind: 'aborted', usage };
+      if (timedOut || error?.name === 'AbortError') return { ok: false, kind: 'timeout', usage };
+      return { ok: false, kind: 'fetch', detail: String(error?.message || error), usage };
+    } finally { if (reader && !naturalEof) try { await reader.cancel(); } catch {} clearTimeout(timer); args.signal?.removeEventListener('abort', abort); }
+  }
+}
+
 // ===== 多供应商 =====
 // 供应商注册表:静态声明各组 env 前缀 + 展示名 + 协议,「商」切换只认 id。老渠道 OPENAI_*/ANTHROPIC_*
 // 各占一个默认供应商 id(opencode / anthropic),向后兼容:provider 不传时行为一字不变。
@@ -233,14 +327,14 @@ export interface DeskProviderDef {
   id: string;
   name: string;
   prefix: string;                 // env 键前缀,如 'DEEPSEEK' → DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL / DEEPSEEK_MODEL
-  protocol: 'openai' | 'anthropic';
+  protocol: 'openai' | 'anthropic' | 'responses';
   defaultModels: string[];        // 没配 <PREFIX>_MODEL 时兜底的模型名列表(anthropic 用,展示给前端下拉)
 }
 
 export interface DeskProviderConfig {
   id: string;
   name: string;
-  protocol: 'openai' | 'anthropic';
+  protocol: 'openai' | 'anthropic' | 'responses';
   apiKey: string;
   baseUrl?: string;
   model?: string;
@@ -251,7 +345,7 @@ export interface DeskProviderConfig {
 export interface DeskProviderInfo {
   id: string;
   name: string;
-  protocol: 'openai' | 'anthropic';
+  protocol: 'openai' | 'anthropic' | 'responses';
   models: string[];
 }
 
@@ -276,6 +370,7 @@ export const PROVIDER_REGISTRY_IDS: string[] = DESK_PROVIDER_DEFS.map((def) => d
 // <前缀>_API_KEY/_BASE_URL/_MODEL/_MAX_TOKENS。无 override 或 override 不命注册表 = 一字不差原样返回。
 // 覆盖优先于 env:合成后 env[<前缀>_API_KEY] 就是 override 里的值,后续 resolveDeskProvider /
 // deskProviderConfigured / listProviders 全部照读 env,零额外分支。
+// 26E env 为主通过迁移脚本实现：migrate 后 DB 清空，env 自然为主；代码侧保持覆盖优先以兼容旧 DB 在迁移前的行为。
 export function mergeProviderEnv(env: DeskBackendEnv, overrides: ProviderOverride[] = []): DeskBackendEnv {
   const merged: DeskBackendEnv = { ...env };
   for (const o of overrides) {
@@ -382,19 +477,23 @@ export function makeDeskBackend(env: DeskBackendEnv, provider?: string, override
   if (cfg.protocol === 'anthropic') {
     return new AnthropicStreamBackend({ apiKey: cfg.apiKey, baseUrl: cfg.baseUrl, userId: USER_ID });
   }
+  if (cfg.protocol === 'responses') {
+    return new OpenAIResponsesBackend({ apiKey: cfg.apiKey, baseUrl: cfg.baseUrl, model: cfg.model, maxTokens: cfg.maxTokens, allowHttpLocalhost: cfg.allowHttpLocalhost });
+  }
   return new OpenAIStreamBackend({ apiKey: cfg.apiKey, baseUrl: cfg.baseUrl, model: cfg.model, maxTokens: cfg.maxTokens, allowHttpLocalhost: cfg.allowHttpLocalhost });
 }
 
 // ── 「获取模型名称」辅助(网页端拉模型列表用,纯函数便于测试) ──
 // OpenAI 兼容渠道:baseUrl 是 API base(openAiEndpoint 会再补 /chat/completions),models 端点 = {base}/models;
 // anthropic:baseUrl 是完整 Messages 端点(.../v1/messages),models 端点 = 去掉 /messages 再拼 /models。
-export function providerModelsUrl(protocol: 'openai' | 'anthropic', baseUrl?: string): string {
+// responses 与 openai 同模型列表端点。
+export function providerModelsUrl(protocol: 'openai' | 'anthropic' | 'responses', baseUrl?: string): string {
   if (protocol === 'anthropic') {
     const messages = baseUrl && baseUrl.trim() ? baseUrl.trim() : 'https://api.anthropic.com/v1/messages';
     return messages.replace(/\/+$/, '').replace(/\/messages$/, '') + '/models';
   }
   const base = baseUrl && baseUrl.trim() ? baseUrl.trim() : 'https://api.deepseek.com/v1';
-  return base.replace(/\/chat\/completions$/, '').replace(/\/+$/, '') + '/models';
+  return base.replace(/\/chat\/completions$/, '').replace(/\/responses$/, '').replace(/\/+$/, '') + '/models';
 }
 
 // 两个协议的 /models 响应都长成 { data: [{ id: 'xxx' }, ...] },这里统一抽 id 列表。

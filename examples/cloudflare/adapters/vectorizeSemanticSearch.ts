@@ -1,6 +1,6 @@
 import type { SemanticSearchAdapter } from '../../../src/core/storage.ts';
-import { deleteVector, queryVectors, upsertVector } from '../../../src/storage/vectorize';
-import type { Ai, VectorizeIndex } from '../../../src/storage/vectorize';
+import { deleteVector, queryVectors, upsertVector } from '../../../src/storage/vectorize.ts';
+import type { Ai, VectorizeIndex } from '../../../src/storage/vectorize.ts';
 
 export class VectorizeSemanticSearch implements SemanticSearchAdapter {
   constructor(private readonly index: VectorizeIndex, private readonly ai: Ai) {}

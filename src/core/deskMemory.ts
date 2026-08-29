@@ -16,6 +16,13 @@ export const PLOT_LAYER_LABEL = '剧情摘要区';
 export const GENERAL_LAYER_LABEL = '通用区';
 // 层渲染展示顺序：anchor 最前（稳定锚），plot 次之，general 最后。
 export const LAYER_RENDER_ORDER: MemoryLayer[] = ['anchor', 'plot', 'general'];
+// ===== 黄文配方·松紧实验与画像协同（task-29） =====
+// 锚点短语：用于识别黄文配方（轻/重两版均含此短语，避免硬编码 recipeId）。
+export const YELLOW_ANCHOR_PHRASE = '注重角色体验和动作';
+// 松版：氛围松弛、留白、细腻心理余韵为主
+export const YELLOW_LIGHT_SOFT = '注重角色体验和动作，兼顾男方感觉与女方反应。氛围松弛、留白，细腻心理与感官余韵为主，不过度直给，注重情绪铺垫与身体感的层层递进。';
+// 紧版：节奏紧凑、感官强烈、直接有力
+export const YELLOW_LIGHT_TIGHT = '注重角色体验和动作，兼顾男方感觉与女方反应。节奏紧凑、感官强烈、直接有力，动作描写具体，反应鲜明，不过度铺垫，直击体验核心。';
 // 单窗记忆条数上限：超出即需 Compact，避免无限增长撑爆注入体积。
 export const MEMORY_CAP = 200;
 // 蒸馏一次性最多新增条数（防模型一次吐一大片刷屏）。
@@ -116,6 +123,29 @@ export function renderMemoriesText(memories: DeskMemory[], themeOrder: string[] 
   };
   for (const l of LAYER_RENDER_ORDER) pushLayer(l);
   return parts.join('\n\n');
+}
+
+// ===== 画像协同 helpers（task-29） =====
+// 过滤通用区·用户画像
+export function filterPortraitMemories(memories: DeskMemory[]): DeskMemory[] {
+  return (memories || []).filter((m) => m && m.layer === 'general' && m.theme === '用户画像' && typeof m.content === 'string' && m.content.trim());
+}
+export function renderPortraitText(memories: DeskMemory[]): string {
+  const list = filterPortraitMemories(memories);
+  if (!list.length) return '';
+  return list.map((m) => (m.title ? `${m.title}：${m.content}` : m.content).replace(/\s*\n+\s*/g, ' ').trim()).join('\n');
+}
+// 从已渲染的 memoriesText 中抽取【用户画像】段落（兼容已渲染文本复用，避免二次请求）
+export function extractPortraitFromRendered(memoriesText: string): string {
+  const text = String(memoriesText || '');
+  if (!text) return '';
+  // 兼容两种渲染形：通用区内【用户画像】子块，或直接的【用户画像】段
+  const m = text.match(/【用户画像】\n([\s\S]*?)(?=\n【|$)/);
+  if (m && m[1].trim()) return m[1].trim().slice(0, 1200);
+  return '';
+}
+export function isYellowLightSystem(lightSystem: string): boolean {
+  return typeof lightSystem === 'string' && lightSystem.includes(YELLOW_ANCHOR_PHRASE);
 }
 
 // ===== 蒸馏输出解析 =====

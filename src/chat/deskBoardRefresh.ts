@@ -17,9 +17,9 @@
 // 模型请求统一收口进 completeText，直连 Anthropic API，不在此复制调用细节。
 // 错误文案与记账仍留本文件——合同层只回结构化终态。
 
-import { makeD1UsageSink } from '../storage/usageSink';
-import { completeText, type CompleteTextUsage } from './modelBackend';
-import { parseStateBoard } from './desk';
+import { makeD1UsageSink } from '../storage/usageSink.ts';
+import { completeText, type CompleteTextUsage } from './modelBackend.ts';
+import { parseStateBoard } from './desk.ts';
 
 interface DeskBoardRefreshEnv {
   OC_DB: D1Database;

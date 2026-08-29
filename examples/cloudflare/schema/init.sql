@@ -228,4 +228,30 @@ CREATE TABLE custom_cg (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX custom_cg_project_char_idx ON custom_cg(project, char_key, enabled, updated_at DESC);
-CREATE INDEX custom_cg_scene_idx ON custom_cg(scene_key, enabled, updated_at DESC);
+CREATE INDEX custom_cg_scene_idx ON custom_cg(scene_key, enabled, updated_at DESC);-- 0008_usage_enriched.sql
+-- Token 消耗看板：按供应商/模型/项目/角色/对话维度聚合，需在 usage_log 上补维度列
+ALTER TABLE usage_log ADD COLUMN project TEXT;
+ALTER TABLE usage_log ADD COLUMN char_key TEXT;
+ALTER TABLE usage_log ADD COLUMN window_id TEXT;
+ALTER TABLE usage_log ADD COLUMN provider_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_usage_log_created_at ON usage_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_usage_log_project ON usage_log(project);
+CREATE INDEX IF NOT EXISTS idx_usage_log_char ON usage_log(char_key);
+CREATE INDEX IF NOT EXISTS idx_usage_log_window ON usage_log(window_id);
+-- 0009_diary_coverage.sql
+-- 补写“已写感知”：记录每篇日记覆盖了哪段对话，便于一键补写时跳过已写、从未覆盖处继续
+CREATE TABLE IF NOT EXISTS diary_coverage (
+  id TEXT PRIMARY KEY,
+  diary_id TEXT NOT NULL,
+  project TEXT,
+  char_key TEXT,
+  window_id TEXT,
+  floor_start TEXT,
+  floor_end TEXT,
+  floor_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (diary_id) REFERENCES diaries(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_diary_coverage_window ON diary_coverage(window_id);
+CREATE INDEX IF NOT EXISTS idx_diary_coverage_char ON diary_coverage(char_key);
+CREATE INDEX IF NOT EXISTS idx_diary_coverage_project ON diary_coverage(project);

@@ -13,11 +13,11 @@
 //
 // 状态板协议、楼层/窗口原子提交和时光带折叠触发都在此收尾。
 
-import { MODEL_PROFILES } from './models';
-import { makeD1UsageSink } from '../storage/usageSink';
-import { assembleDesk } from './deskAssemble';
-import { loadDeskTimelineState, renderTimelineText, parseDeskTimelineCutoff, maybeFoldDeskTimeline, invalidateDeskTimelineIfFolded, fenceDeskTimelineAfterWrite } from './deskTimeline';
-import type { Ai, VectorizeIndex } from '../storage/vectorize';
+import { MODEL_PROFILES } from './models.ts';
+import { makeD1UsageSink } from '../storage/usageSink.ts';
+import { assembleDesk } from './deskAssemble.ts';
+import { loadDeskTimelineState, renderTimelineText, parseDeskTimelineCutoff, maybeFoldDeskTimeline, invalidateDeskTimelineIfFolded, fenceDeskTimelineAfterWrite } from './deskTimeline.ts';
+import type { Ai, VectorizeIndex } from '../storage/vectorize.ts';
 import { parseStateBoard as parseCoreStateBoard, STATEBOARD_MAX_BYTES as CORE_STATEBOARD_MAX_BYTES } from '../core/stateBoard.ts';
 import type { DeskAssetStorage, DeskMemoryStorage, DeskStorage, DeskStoryStorage, DeskTurnStorage, SemanticSearchAdapter } from '../core/storage.ts';
 import type { DeskMemory, MemoryLayer } from '../core/types.ts';
@@ -26,7 +26,8 @@ import { makeDeskBackend, resolveDeskProvider } from '../adapters/streamModelBac
 import type { ProviderOverride } from '../core/providerConfigStore.ts';
 import { isTextOnlyModel, type DeskImageAttachment, type StreamChatResult } from '../core/modelBackend.ts';
 import { validateDeskChannelConfig } from '../core/deskChannelConfig.ts';
-import { buildChatAppendix } from '../tools/chapterMemory.ts';
+import { buildChatAppendix, parseRefBookIds } from '../tools/chapterMemory.ts';
+import { renderDiaryIndexText, buildOpeningContext, isFirstTurn } from '../core/contextInjector.ts';
 
 interface DeskChatEnv {
   OC_DB: D1Database;
@@ -63,6 +64,7 @@ export interface DeskChatStorage {
   deskStory: DeskStoryStorage;
   semantic?: SemanticSearchAdapter;
   memory?: DeskMemoryStorage;
+  diary?: import('../core/storage.ts').DiaryStorage;
 }
 
 // 把模型层结构化失败/截断转成用户能看懂的中文文案。SSE 的 error 事件会原文透传到前端横幅，
@@ -520,43 +522,91 @@ export async function handleDeskChat(
   // 记忆注入（跨角色重构）：装配携带「项目共享区 + 当前角色区」的记忆（非 roll），供 AI 引用。
   // 当前角色 = 窗口声明的 charKey，回落 windowVars.char（{{char}}）；为空的窗只进共享区。
   // 读失败不打断装配。
+  // 记忆特指 deskMemory；仅开局一次性注入记忆 + 近2-3条日记索引（task-26B）
   const memCharKey = String(win.charKey || (win.vars && win.vars.char) || '');
+  // task-30 多选记忆：优先读 vars.selected_char_keys，否则回退单 charKey
+  const selectedForMemory: string[] = (() => {
+    const v: any = (win.vars as any)?.selected_char_keys ?? (win.vars as any)?.selectedCharKeys ?? (win.vars as any)?.selected_charkeys;
+    if (Array.isArray(v)) return v.filter((x: any) => typeof x === 'string' && String(x).trim()).map((x: string) => String(x).trim());
+    if (typeof v === 'string' && String(v).trim()) return [String(v).trim()];
+    return [];
+  })();
+  const memoryCharKeys = selectedForMemory.length ? selectedForMemory : (memCharKey ? [memCharKey] : []);
+  const opening = isFirstTurn(allFloors);
   let memoriesText = '';
-  if (memory) {
-    try {
-      const scopeRows: DeskMemory[] = [];
-      const sharedRows = await memory.listByScope({ project, charKey: '' });
-      scopeRows.push(...sharedRows);
-      if (memCharKey) {
-        const charRows = await memory.listByScope({ project, charKey: memCharKey });
-        scopeRows.push(...charRows);
-      }
-      memoriesText = renderMemoriesText(scopeRows);
-    } catch (e) {
-      console.error('[desk] 读记忆失败,按无记忆继续', e);
-    }
-  }
-  // 章节记忆（task-18 流程B）+ 参考风格（task-19）：新对话/续写时按索引检索相关情节注入。
-  // 查询 = 本楼输入 + 最近几楼；读失败不打断装配。记忆段不在这里拼——上方 memoriesText 已含，
-  // 重复注入只会烧 token。附录与风格块都拼进 memories 槽（故事水流里情节核心之后）。
+  let diaryIndexText = '';
   let chapterAppendix = '';
   let styleAppendix = '';
-  if (project) {
-    try {
-      const recentQuery = [assembleInput, ...assembleFloors.slice(-3).map((f: any) => f.content)]
-        .filter(Boolean).join('\n').slice(0, 800);
-      const appx = await buildChatAppendix(env as any, { project, query: recentQuery, charKey: memCharKey });
-      chapterAppendix = appx.appendix;
-      styleAppendix = appx.styleBlock;
-    } catch (e) {
-      console.error('[desk] 章节记忆/参考风格注入失败,按无注入继续', e);
+  if (opening) {
+    if (memory) {
+      try {
+        const scopeRows: DeskMemory[] = [];
+        const sharedRows = await memory.listByScope({ project, charKey: '' });
+        scopeRows.push(...sharedRows);
+        for (const ck of memoryCharKeys) {
+          const charRows = await memory.listByScope({ project, charKey: ck });
+          scopeRows.push(...charRows);
+        }
+        const prunedRows = [...scopeRows].sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''))).slice(0, 30);
+        const rawMemText = renderMemoriesText(prunedRows);
+        memoriesText = rawMemText.length > 6000 ? rawMemText.slice(0, 6000) + '\n…（记忆已截断，仅展示最新相关）' : rawMemText;
+      } catch (e) {
+        console.error('[desk] 读记忆失败,按无记忆继续', e);
+      }
     }
+    // 近 2-3 条日记索引作为额外信息（小记：确保记得最近几次发生的事 + 日记重要事）
+    const diaryStore = storage.diary as any;
+    if (diaryStore) {
+      try {
+        const diaryCharKey = memoryCharKeys[0] || memCharKey || undefined;
+        const entries = await diaryStore.listEntries({ project, charKey: diaryCharKey, limit: 3 });
+        diaryIndexText = renderDiaryIndexText(entries as any, 3);
+      } catch (e) {
+        console.error('[desk] 读日记索引失败,按无索引继续', e);
+      }
+    } else if (project) {
+      // 回退：直接读 D1 diaries 表（适配未显式传 diary storage 的旧调用）
+      try {
+        const db: any = (env as any).OC_DB;
+        if (db) {
+          const diaryCK2 = memoryCharKeys[0] || memCharKey;
+          const q = diaryCK2
+            ? await (db.prepare(`SELECT date, title, content FROM diaries WHERE project = ? AND char_key = ? ORDER BY created_at DESC LIMIT 3`).bind(project, diaryCK2) as any).all()
+            : await (db.prepare(`SELECT date, title, content FROM diaries WHERE project = ? ORDER BY created_at DESC LIMIT 3`).bind(project) as any).all();
+          const rows = (q.results || []) as any[];
+          diaryIndexText = renderDiaryIndexText(rows as any, 3);
+        }
+      } catch {}
+    }
+    if (project) {
+      try {
+        const recentQuery = [assembleInput, ...assembleFloors.slice(-3).map((f: any) => f.content)]
+          .filter(Boolean).join('\n').slice(0, 800);
+        const refBookIds = parseRefBookIds(windowVars.refBookIds ?? windowVars.ref_book_ids ?? '');
+        // 26E 显式参考书：未选书不注入，仅对选书注入
+        if (refBookIds.length === 0) {
+          chapterAppendix = '';
+          styleAppendix = '';
+        } else {
+          const appx = await buildChatAppendix(env as any, { project, query: recentQuery, charKey: memoryCharKeys[0] || memCharKey, refBookIds });
+          chapterAppendix = appx.appendix;
+          styleAppendix = appx.styleBlock;
+        }
+      } catch (e) {
+        console.error('[desk] 章节记忆/参考风格注入失败,按无注入继续', e);
+      }
+    }
+  } else {
+    // 非开局：不重复注入记忆/日记/章节附录，避免上下文污染（task-26B）
   }
+  const openingMemories = opening ? buildOpeningContext({ memoriesText, diaryIndexText, chapterAppendix, styleAppendix }) : '';
   const assembled = await assembleDesk({ deskAssets, deskStory, semantic }, {
     project, recipeId, input: assembleInput,
     floors: assembleFloors, note, noteDepth,
     stateBoard: effectiveStateBoard, vars: windowVars, timeline: timelineText,
-    memories: [memoriesText, chapterAppendix, styleAppendix].filter((s) => s && s.trim()).join('\n\n'),
+    memories: openingMemories,
+    selectedCharKeys: memoryCharKeys,
+    selected_char_keys: memoryCharKeys,
   });
   if (!assembled.success) return errJson(assembled.error || '装配失败', 500);
   const systemBlocks: Array<{ text: string; cache: boolean }> = assembled.system;

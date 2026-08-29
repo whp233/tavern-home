@@ -6,8 +6,8 @@
 // 楼层编辑/truncate 必须联动时光带双栅栏(工单§4 D):这里只负责"先栅栏、再写、后栅栏"的调用顺序,
 // 栅栏本体(CAS/坏形状修复/段数封顶)全在 chat/deskTimeline.ts,别在这里另起一份判断逻辑。
 
-import { invalidateDeskTimelineIfFolded, fenceDeskTimelineAfterWrite, SEED_TIMELINE_STATE, updateDeskTimelineTexts } from '../chat/deskTimeline';
-import { scrubLoneSurrogates } from '../shared/text';
+import { invalidateDeskTimelineIfFolded, fenceDeskTimelineAfterWrite, SEED_TIMELINE_STATE, updateDeskTimelineTexts } from '../chat/deskTimeline.ts';
+import { scrubLoneSurrogates } from '../shared/text.ts';
 import { STATEBOARD_MAX_BYTES } from '../core/stateBoard.ts'; // 手改与机器写入共享同一字节上限(核心纯函数模块,不经 chat/desk.ts 转手)
 
 interface DeskWindowsEnv {

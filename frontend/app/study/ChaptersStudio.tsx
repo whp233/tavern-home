@@ -9,6 +9,7 @@
 // 变更类请求收紧到 success===true 才算数,读类放宽到 success!==false。
 
 import { useState, useEffect, useRef } from 'react';
+import { useFloatingTask, FloatingTaskBall } from './useFloatingTask';
 
 type ChapterRow = {
   id: string;
@@ -634,6 +635,8 @@ export default function ChaptersStudio({ base, envOk, project, onEditorOpenChang
   const [integrateBusy, setIntegrateBusy] = useState(false);
   const [integrateMsg, setIntegrateMsg] = useState('');
   const [chapterNosInput, setChapterNosInput] = useState('');
+  // 26C 悬浮球：整合整理后台化可终止
+  const floating = useFloatingTask('整合中');
 
   useEffect(() => {
     if (!novelOpen || !envOk) return;
@@ -688,13 +691,18 @@ export default function ChaptersStudio({ base, envOk, project, onEditorOpenChang
   }
 
   // 整合整理:auto=未整理优先(建议位);chapters=指定章号列表(用户选择为主)。失败的章不标记完成。
+  // 26C 后台化：AbortController -> signal -> fetch，终止后 aborted 不落库（服务端已部分落库但前端不再提示成功）
   async function runIntegrate(opts?: { chapters?: string[] }) {
+    const estTotal = opts?.chapters?.length || Math.max(1, idxEntries.filter((e) => !e.integrated).length || 3);
+    const signal = floating.start('整合中', { total: estTotal, detail: '章节整合后台进行中，可点球回前台/终止' });
     setIntegrateBusy(true); setIntegrateMsg('整合中…(每章一次模型调用,多章会等一会儿)');
     try {
+      if (signal.aborted) throw new DOMException('aborted', 'AbortError');
       const res = await fetch(`${base}/api/oc/desk/novel/integrate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(opts?.chapters?.length ? { project, chapters: opts.chapters } : { project, auto: true }),
+        signal,
       });
       const d = await res.json().catch(() => null);
       if (!res.ok || !d || d.success !== true) throw new Error(d?.error || '整合失败');
@@ -705,9 +713,16 @@ export default function ChaptersStudio({ base, envOk, project, onEditorOpenChang
         `${d.remaining_candidates ? `,还有 ${d.remaining_candidates} 章待整理` : ''}` +
         `${d.memory && d.memory.added >= 0 ? `,记忆新增 ${d.memory.added} 条` : ''}`,
       );
+      if (signal.aborted) { setIntegrateMsg('已暂停'); return; }
       setIdxNonce((n) => n + 1);
-    } catch (e: any) { setIntegrateMsg(e.message || '整合失败'); }
-    finally { setIntegrateBusy(false); }
+    } catch (e: any) {
+      if (e?.name === 'AbortError' || e?.message === 'aborted' || (e as any)?.aborted) {
+        setIntegrateMsg('已暂停');
+        return;
+      }
+      setIntegrateMsg(e.message || '整合失败');
+    }
+    finally { setIntegrateBusy(false); floating.dismiss(); }
   }
 
   function runIntegrateSpecified() {
@@ -1199,6 +1214,7 @@ export default function ChaptersStudio({ base, envOk, project, onEditorOpenChang
       )}
       </>
       )}
+      <FloatingTaskBall task={floating.task} onAbort={() => floating.abort()} />
     </>
   );
 }

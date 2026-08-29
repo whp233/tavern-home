@@ -4,7 +4,7 @@
 
 import type { TrpgAction, TrpgScenario, TrpgState } from './types.ts';
 
-function line(value: string): string {
+function line(value: unknown): string {
   return String(value ?? '').trim();
 }
 
@@ -28,6 +28,7 @@ export function buildGmRequest(
   scenario: TrpgScenario,
   state: TrpgState,
   action: TrpgAction,
+  extra?: { preferences?: string; charCards?: Array<{ name: string; content: string; fields?: Record<string, string> }> },
 ): GmPromptRequest {
   const location = scenario.locations.find((l) => l.id === state.locationId);
   const locationName = location?.name ?? state.locationId;
@@ -69,8 +70,18 @@ ${JSON.stringify(state, null, 2)}
 当前位置可用动作：
 ${actionLines(scenario, state).join('\n') || '暂无动作'}`;
 
-  const prompt = `玩家选择了动作「${line(action.label)}」(${action.id})。
-请根据当前状态推进剧情：先第二人称叙述 120~200 字，末尾附 JSON 数据块：
+  // 玩家自定义偏好 + 角色卡参考（按需注入，cache 便于 GM 稳定复用）
+  const preferenceBlock = line(extra?.preferences) ? `[玩家自定义偏好]\n${line(extra?.preferences)}` : '';
+  const charBlock = Array.isArray(extra?.charCards) && extra.charCards.length
+    ? `[参考角色卡 · ${extra.charCards.length}位]\n` + extra.charCards.map((c, i) => {
+        const fields = c.fields ? Object.entries(c.fields).filter(([, v]) => String(v || '').trim()).map(([k, v]) => `${k}: ${String(v).slice(0, 400)}`).join(' / ') : '';
+        const body = line(c.content).slice(0, 1200);
+        return `${i + 1}. ${line(c.name) || '角色'}${fields ? `（${fields}）` : ''}\n${body || '（无正文）'}`;
+      }).join('\n\n')
+    : '';
+
+  const prompt = `${preferenceBlock ? preferenceBlock + '\n\n' : ''}${charBlock ? charBlock + '\n\n' : ''}玩家选择了动作「${line(action.label)}」(${action.id})。
+请根据当前状态推进剧情${preferenceBlock || charBlock ? '，并结合上方【玩家偏好】与【角色卡】对该角色的性格/口吻/关系做定制化描写（允许多角色同时在场时分别体现）' : ''}：先第二人称叙述 120~200 字，末尾附 JSON 数据块：
 {
   "requires_dice": true,
   "difficulty": ${action.difficulty ?? '? optional'},
@@ -85,11 +96,16 @@ ${actionLines(scenario, state).join('\n') || '暂无动作'}`;
 }
 请根据剧情合理性决定是否判定、难度与状态变化；不要替程序掷骰。`;
 
+  const systemTexts: Array<{ text: string; cache: boolean }> = [
+    { text: persona, cache: true },
+    { text: scenarioAndState, cache: true },
+  ];
+  // 偏好/角色卡作为独立 system 块，单独 cache，不污染剧本摘要
+  if (preferenceBlock) systemTexts.push({ text: preferenceBlock, cache: true });
+  if (charBlock) systemTexts.push({ text: charBlock, cache: true });
+
   return {
-    system: [
-      { text: persona, cache: true },
-      { text: scenarioAndState, cache: true },
-    ],
+    system: systemTexts,
     prompt,
   };
 }

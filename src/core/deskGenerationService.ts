@@ -72,7 +72,7 @@ export class DeskGenerationService {
   async generate(input: GenerateDeskTurnInput) {
     if (input.mode === 'roll' && !input.expectedFloor) return { success: false, error: 'Roll target is required.' };
     if (input.mode === 'normal' && !input.userFloor) return { success: false, error: 'User floor is required.' };
-    if (input.signal?.aborted) return { success: false, error: 'aborted' };
+    if (input.signal?.aborted) return { success: false, error: 'aborted' }; // 26C: aborted 不落库，悬浮球隐藏
     const system = input.styleRefBlock && input.styleRefBlock.trim()
       ? [...input.system, { text: input.styleRefBlock.trim(), cache: false }]
       : input.system;

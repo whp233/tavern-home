@@ -153,12 +153,19 @@ export interface TrpgState {
   phase: TrpgPhase;
 }
 
+export interface TrpgCustomContext {
+  preferences?: string;
+  charCards?: Array<{ name: string; content: string; fields?: Record<string, string> }>;
+  project?: string;
+}
+
 export interface TrpgSession {
   id: string;
   scenarioId: string;
   createdAt: string;
   state: TrpgState;
   history: string[];
+  custom?: TrpgCustomContext;
 }
 
 // 骰子

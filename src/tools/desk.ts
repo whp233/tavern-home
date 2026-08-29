@@ -16,13 +16,13 @@
 // validateRegexFlags)故意写成不碰D1/env、只吃/吐普通对象——verify_desk_import.mjs 直接复制
 // 这几个函数体对着真实样本跑计数,两边必须是同一份逻辑,改这里记得把验证脚本也搬一遍。
 
-import { upsertVector } from '../storage/vectorize';
-import type { Ai, VectorizeIndex } from '../storage/vectorize';
-import { isPatternUnsafe } from '../shared/regexSafety';
-import { embedMemory } from './study';
-import type { CharacterCard } from '../core/characterCard';
-import { parseChatJsonl, mergeFloors } from '../core/chatImport';
-import { deskWindowCreate } from './deskWindows';
+import { upsertVector } from '../storage/vectorize.ts';
+import type { Ai, VectorizeIndex } from '../storage/vectorize.ts';
+import { isPatternUnsafe } from '../shared/regexSafety.ts';
+import { embedMemory } from './study.ts';
+import type { CharacterCard } from '../core/characterCard.ts';
+import { parseChatJsonl, mergeFloors } from '../core/chatImport.ts';
+import { deskWindowCreate } from './deskWindows.ts';
 
 interface DeskEnv {
   OC_DB: D1Database;

@@ -26,7 +26,8 @@ migrations_dir = "examples/cloudflare/schema/migrations"
 # binding = "AI"
 
 [vars]
-ALLOWED_ORIGINS = "http://localhost:8787,http://localhost:3001,http://192.168.101.8:3001"
+# task-33 安卓壳：Capacitor WebView 默认为 https://localhost 与 capacitor://localhost，需放行；本地局域网 192.168.* 保留便于 adb 调试
+ALLOWED_ORIGINS = "http://localhost:8787,http://localhost:3001,http://192.168.101.8:3001,https://localhost,capacitor://localhost,http://localhost"
 COMPANION_COMMENT_WRITE = "false"
 
 # ANTHROPIC_API_KEY is a secret, not a var — set it with `wrangler secret put ANTHROPIC_API_KEY`.

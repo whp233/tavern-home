@@ -109,6 +109,13 @@ export default function TrpgRoom({ base, envOk, onGoBack }: { base: string; envO
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
   const [error, setError] = useState('');
+  // 定制：玩家偏好 + 多角色卡
+  const [preferences, setPreferences] = useState('');
+  const [customProject, setCustomProject] = useState('default');
+  const [projectOptions, setProjectOptions] = useState<string[]>(['default']);
+  const [charCards, setCharCards] = useState<Array<{ id: string; name: string }>>([]);
+  const [selectedChars, setSelectedChars] = useState<string[]>([]);
+  const [charsLoading, setCharsLoading] = useState(false);
 
   const api = useCallback(async (path: string, opts?: RequestInit): Promise<any> => {
     if (!envOk) throw new Error('环境变量没配好');
@@ -134,6 +141,39 @@ export default function TrpgRoom({ base, envOk, onGoBack }: { base: string; envO
     }
   }, [api, selectedId]);
 
+  // 定制：拉项目列表 + 角色卡
+  useEffect(() => {
+    if (!envOk) return;
+    (async () => {
+      try {
+        const res = await fetch(`${base}/api/oc/stats`);
+        const d = await res.json().catch(() => null);
+        if (res.ok && d?.by_project) {
+          const opts = Object.keys(d.by_project).filter((p: string) => p.trim()).sort((a: string, b: string) => a.localeCompare(b, 'zh'));
+          if (opts.length) { setProjectOptions(opts); if (!opts.includes(customProject)) setCustomProject(opts[0]); }
+        }
+      } catch {}
+    })();
+  }, [base, envOk]);
+
+  useEffect(() => {
+    if (!envOk || !customProject) return;
+    setCharsLoading(true);
+    (async () => {
+      try {
+        const res = await fetch(`${base}/api/oc/desk/lore?${new URLSearchParams({ project: customProject })}`);
+        const d = await res.json().catch(() => null);
+        if (res.ok && d?.success) {
+          const rows: any[] = Array.isArray(d.lore) ? d.lore : [];
+          const chars = rows.filter((r) => !!r?.is_char && typeof r?.name === 'string' && r.name).map((r: any) => ({ id: r.id, name: r.name }));
+          setCharCards(chars);
+          setSelectedChars((prev) => prev.filter((n) => chars.some((c) => c.name === n)));
+        } else setCharCards([]);
+      } catch { setCharCards([]); }
+      finally { setCharsLoading(false); }
+    })();
+  }, [base, envOk, customProject]);
+
   useEffect(() => {
     loadScenarios();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -155,7 +195,7 @@ export default function TrpgRoom({ base, envOk, onGoBack }: { base: string; envO
       const d = await api('/api/oc/trpg/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scenarioId: selectedId }),
+        body: JSON.stringify({ scenarioId: selectedId, preferences: preferences.trim() || undefined, charNames: selectedChars.length ? selectedChars : undefined, project: selectedChars.length ? customProject : undefined }),
       });
       setSession(d.session || null);
     } catch (e: any) {
@@ -262,8 +302,45 @@ export default function TrpgRoom({ base, envOk, onGoBack }: { base: string; envO
                   </button>
                 ))}
               </div>
+              {/* ── 定制：玩家偏好 + 多角色卡 ── */}
+              <div style={{ ...glassStyle, padding: '14px 16px', marginTop: 16 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink-deep)', marginBottom: 8 }}>定制生成（可选）</div>
+                <div style={{ fontSize: 11.5, color: 'var(--ink2)', marginBottom: 8 }}>偏好会在模型生成时注入 GM 叙述；角色卡勾选后 GM 会按该角色的性格/口吻/关系做定制，允许多选。</div>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+                  <div style={{ flex: '1 1 160px', minWidth: 140 }}>
+                    <div style={{ fontSize: 12, color: 'var(--ink2)', marginBottom: 5 }}>归属项目</div>
+                    <select value={customProject} onChange={(e) => setCustomProject(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+                      {projectOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ flex: '1 1 260px', minWidth: 220 }}>
+                    <div style={{ fontSize: 12, color: 'var(--ink2)', marginBottom: 5 }}>玩家偏好（自定义）</div>
+                    <input value={preferences} onChange={(e) => setPreferences(e.target.value)} placeholder="如：偏悬疑/轻喜剧、节奏慢、重视对话与心理描写" style={inputStyle} maxLength={800} />
+                  </div>
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--ink2)', marginBottom: 6 }}>为哪些角色卡定制（多选，留空=通用）</div>
+                {charsLoading ? (
+                  <div style={{ fontSize: 12.5, color: 'var(--ink2)' }}>正在翻角色卡…</div>
+                ) : charCards.length === 0 ? (
+                  <div style={{ fontSize: 12.5, color: 'var(--ink2)' }}>该项目还没有角色卡（is_char），可先去书架/抽屉建世界书并勾“作为角色卡”。</div>
+                ) : (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 12 }}>
+                    {charCards.map((c) => {
+                      const checked = selectedChars.includes(c.name);
+                      return (
+                        <button key={c.id} onClick={() => setSelectedChars((prev) => checked ? prev.filter((x) => x !== c.name) : [...prev, c.name])} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 6, padding: '14px 16px', borderRadius: 16, border: checked ? '2px solid var(--accent)' : '1px solid var(--line-soft)', background: checked ? 'rgba(120,90,255,0.08)' : 'var(--card-bg)', cursor: 'pointer', fontSize: 13, color: 'var(--ink-body)', boxShadow: checked ? '0 4px 14px var(--card-shadow)' : '0 2px 8px var(--card-shadow)', textAlign: 'left', transition: 'all 0.16s' }}>
+                          <span style={{ fontSize: 15, fontWeight: 600, color: checked ? 'var(--accent)' : 'var(--ink-deep)' }}>{c.name}</span>
+                            <span style={{ fontSize: 11.5, color: checked ? 'var(--accent)' : 'var(--ink2)' }}>{checked ? '✓ 已选择 · 再点取消' : '点一下选择'}</span>
+                         
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                {selectedChars.length > 0 && <div style={{ fontSize: 11.5, color: 'var(--ink2)', marginTop: 6 }}>已选 {selectedChars.length} 位：{selectedChars.join('、')} 将在开局及后续每步 GM 生成中作为参考。</div>}
+              </div>
               <button className="serc" onClick={startGame} disabled={acting || !selectedId} style={{ ...btnPrimaryStyle, marginTop: 16, opacity: acting || !selectedId ? 0.6 : 1 }}>
-                {acting ? '开局中' : `开始「${selected?.name || '未选'}」`}
+                {acting ? '开局中' : `开始「${selected?.name || '未选'}」${selectedChars.length ? ` · 为 ${selectedChars.join('、')} 定制` : ''}`}
               </button>
             </>
           )}

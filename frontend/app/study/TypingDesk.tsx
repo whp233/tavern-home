@@ -17,6 +17,7 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, forwardRef, useImperativeHandle } from 'react';
 import DeskDrawerHub, { type DeskDrawerHandle, type DeskDrawerTabKey } from './DeskDrawers';
 import LoreWindow from './LoreWindow';
+import PlotOutlineLauncher from './PlotOutlineLauncher';
 import { applyDownRegex, segmentRendered, buildCardSrcDoc, DESK_CARD_MAX_HEIGHT, foldProtocolBlocks, unwrapContentTagClient, type DeskRegexRule, type RenderSegment, type FoldPart } from './deskRender';
 
 // ── 数据形状(照后端 tools/deskWindows.ts / deskRecipes.ts / tools/desk.ts / chat/deskAssemble.ts 的真实返回来,字段名不许自己发明) ──
@@ -151,6 +152,26 @@ type Floor = {
 // DEFAULT_PROJECTS 占位——占位名不再无条件并入,免得空库首跑顶着两个假项目误导人。
 const DEFAULT_PROJECTS = ['默认项目'];
 
+// task-30 角色块多选持久化：单键存 { [project]: string[] } 映射，按项目隔离，localStorage 跨会话记住
+const SELECTED_CHARS_STORAGE_KEY = 'oc_desk_selected_chars_v1';
+function loadSelectedMap(): Record<string, string[]> {
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(SELECTED_CHARS_STORAGE_KEY) : null;
+    if (!raw) return {};
+    const j = JSON.parse(raw);
+    if (!j || typeof j !== 'object' || Array.isArray(j)) return {};
+    const out: Record<string, string[]> = {};
+    for (const k of Object.keys(j)) {
+      const v = (j as any)[k];
+      if (Array.isArray(v)) out[k] = v.filter((x: any) => typeof x === 'string' && x.trim()).map((x: string) => x.trim());
+    }
+    return out;
+  } catch { return {}; }
+}
+function saveSelectedMap(m: Record<string, string[]>) {
+  try { if (typeof localStorage !== 'undefined') localStorage.setItem(SELECTED_CHARS_STORAGE_KEY, JSON.stringify(m)); } catch {}
+}
+
 // 装配引擎给模型的固定状态板协议键(chat/deskAssemble.ts STATEBOARD_INSTRUCTION 原文钉死这五项)。
 // 板子是空的/模型还没写过状态板时,拿这五个当占位摆样子;板子里实际有什么键就照原样列,不因为
 // 对不上这五个名字就砍掉(万一模型没完全照抄键名,好歹别把数据吞了)。
@@ -190,16 +211,21 @@ const inputStyle: React.CSSProperties = {
 
 // 记忆条目卡片（记忆面板内复用）：标题/正文 + 编辑/删除（删除走两步确认文案切换）。
 // props: m=条目, delStage=该条目删除确认阶段(0/1), onEdit/onDelete。
-function MemoCard({ m, delStage, onEdit, onDelete }: {
+function MemoCard({ m, delStage, selected, onEdit, onDelete, onToggle }: {
   m: DeskMemoryItem;
   delStage: 0 | 1;
+  selected?: boolean;
   onEdit: () => void;
   onDelete: () => void;
+  onToggle?: () => void;
 }) {
   return (
-    <div style={{ borderRadius: 13, padding: '11px 14px', background: 'var(--scale-0)' }}>
+    <div style={{ borderRadius: 13, padding: '11px 14px', background: selected ? 'var(--accent-soft, rgba(120,90,255,0.08))' : 'var(--scale-0)', border: selected ? '1px solid var(--accent)' : '1px solid transparent' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-        <span className="serc" style={{ fontSize: 13.5, color: 'var(--ink-deep)' }}>{m.title}</span>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: onToggle ? 'pointer' : 'default', flex: '1 1 auto', minWidth: 0 }}>
+          {onToggle && <input type="checkbox" checked={!!selected} onChange={onToggle} style={{ accentColor: 'var(--accent)' }} />}
+          <span className="serc" style={{ fontSize: 13.5, color: 'var(--ink-deep)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.title}</span>
+        </label>
         <div style={{ display: 'flex', gap: 10, flex: 'none' }}>
           <button onClick={onEdit} className="serc" style={{ fontSize: 11, border: 'none', background: 'none', cursor: 'pointer', color: 'var(--accent)', fontFamily: 'inherit' }}>编辑</button>
           <button onClick={onDelete} className="serc" style={{ fontSize: 11, border: 'none', background: 'none', cursor: 'pointer', fontFamily: 'inherit', color: delStage === 1 ? '#c2693f' : 'var(--ink2)' }}>
@@ -504,10 +530,65 @@ function FloorActionRow({
 // 组件这时还没被卸载,横幅出得来),放行就顺手把飞着的流掐掉+世界代数翻篇(genRef++)再返回 true。
 export type TypingDeskHandle = { requestLeave: () => boolean };
 
-const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; onBack: () => void; onManageProviders?: () => void }>(function TypingDesk({ base, envOk, onBack, onManageProviders }, deskRef) {
+const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; onBack: () => void; onManageProviders?: () => void; autoEnterWindowId?: string | null; onAutoEnterConsumed?: () => void }>(function TypingDesk({ base, envOk, onBack, onManageProviders, autoEnterWindowId, onAutoEnterConsumed }, deskRef) {
   const [mode, setMode] = useState<'list' | 'write'>('list');
   const [projects, setProjects] = useState<string[]>(DEFAULT_PROJECTS);
   const [project, setProject] = useState<string>(DEFAULT_PROJECTS[0]);
+  // task-30 按项目隔离的多选角色集合，持久化到 localStorage，点即生效，无需二次确认
+  const [selectedCharKeys, setSelectedCharKeys] = useState<string[]>([]);
+  // 初始化 & 项目切换时从持久化恢复
+  useEffect(() => {
+    try {
+      const m = loadSelectedMap();
+      const arr = Array.isArray(m[project]) ? m[project] : [];
+      setSelectedCharKeys(arr);
+    } catch { setSelectedCharKeys([]); }
+  }, [project]);
+  const toggleSelectedChar = useCallback((name: string) => {
+    const key = name.trim();
+    if (!key) return;
+    setSelectedCharKeys((prev) => {
+      const has = prev.includes(key);
+      const next = has ? prev.filter((x) => x !== key) : [...prev, key];
+      try { const m = loadSelectedMap(); m[project] = next; saveSelectedMap(m); } catch {}
+      return next;
+    });
+  }, [project]);
+  const clearSelectedChars = useCallback(() => {
+    setSelectedCharKeys([]);
+    try { const m = loadSelectedMap(); m[project] = []; saveSelectedMap(m); } catch {}
+  }, [project]);
+  // task-30 列表态按项目拉取角色卡（is_char 角色行）用于块状平铺，独立于写作屏的 charCards（win?.project）
+  const [projectCharCards, setProjectCharCards] = useState<string[]>([]);
+  const projectCharSeqRef = useRef(0);
+  useEffect(() => {
+    const proj = project;
+    const tok = ++projectCharSeqRef.current;
+    if (!proj) { setProjectCharCards([]); return; }
+    (async () => {
+      try {
+        const res = await fetch(`${base}/api/oc/desk/lore?${new URLSearchParams({ project: proj })}`);
+        const d = await res.json().catch(() => null);
+        if (!res.ok || !d || d.success !== true) throw new Error();
+        if (tok !== projectCharSeqRef.current) return;
+        const rows = Array.isArray(d.lore) ? d.lore : [];
+        const names = rows.filter((r: any) => !!r?.is_char && typeof r?.name === 'string' && r.name.trim()).map((r: any) => String(r.name).trim());
+        setProjectCharCards(names);
+      } catch {
+        if (tok === projectCharSeqRef.current) setProjectCharCards([]);
+      }
+    })();
+  }, [base, project]);
+  // 角色卡异步到达后，清理已选中的失效项（该项目下已不存在的角色名）
+  useEffect(() => {
+    if (!projectCharCards.length && selectedCharKeys.length === 0) return;
+    const valid = new Set(projectCharCards);
+    const pruned = selectedCharKeys.filter((k) => valid.has(k));
+    if (pruned.length !== selectedCharKeys.length) {
+      setSelectedCharKeys(pruned);
+      try { const m = loadSelectedMap(); m[project] = pruned; saveSelectedMap(m); } catch {}
+    }
+  }, [projectCharCards]);
   // 向导里手建的项目名登记簿——三路来源的异步拉取完成时必须并上它,不许把刚手建的项目
   // 从列表里踩掉、更不许把 setProject 重定向走(codex Day112 Medium)
   const manualProjectsRef = useRef<Set<string>>(new Set());
@@ -742,7 +823,7 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
   // 打开记忆库：按 project + charKey 作用域拉记忆 + 快照（seq 闸防快慢响应错序）。
   async function loadMemories(project_: string, charKey: string) {
     const tok = ++memoSeqRef.current;
-    setMemoLoading(true); setMemoError(''); setMemoNote('');
+    setMemoLoading(true); setMemoError(''); setMemoNote(''); setMemoSelected(new Set());
     fetchMemoScopes(project_);
     try {
       if (!envOk) throw new Error('环境变量没配好');
@@ -846,6 +927,19 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
   // 删除：双击确认（同一卡片家法,这里直接两步按钮文字切换）
   const [memoDelStage, setMemoDelStage] = useState<Record<string, 0 | 1>>({});
   const setTimeoutCleanupRef = useRef<number | null>(null);
+  // 批量选择（记忆库批量删除）
+  const [memoSelected, setMemoSelected] = useState<Set<string>>(new Set());
+  function toggleMemoSelect(id: string) {
+    setMemoSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+  function selectAllMemos(ids: string[]) {
+    setMemoSelected(new Set(ids));
+  }
+  function clearMemoSelect() { setMemoSelected(new Set()); }
   async function deleteMemoGesture(id: string) {
     if ((memoDelStage[id] || 0) === 0) {
       setMemoDelStage((s) => ({ ...s, [id]: 1 }));
@@ -865,8 +959,27 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
       const d = await res.json().catch(() => null);
       if (!d || d.success !== true) throw new Error(d?.error || '删除失败');
       setMemoDelStage((s) => ({ ...s, [id]: 0 }));
+      setMemoSelected((prev) => { const n = new Set(prev); n.delete(id); return n; });
       await loadMemories(memoProject, memoCharKey);
     } catch (e: any) { setMemoError(e.message || '删除失败'); }
+    finally { setMemoBusy(false); }
+  }
+  async function bulkDeleteMemos() {
+    if (!memoryWin || memoSelected.size === 0) return;
+    if (!window.confirm(`确定批量删除选中的 ${memoSelected.size} 条记忆吗？`)) return;
+    setMemoBusy(true); setMemoError('');
+    try {
+      if (!envOk) throw new Error('环境变量没配好');
+      const ids = Array.from(memoSelected);
+      for (const id of ids) {
+        const res = await fetch(`${base}/api/oc/desk/memories/${id}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const d = await res.json().catch(() => null);
+        if (!d || d.success !== true) throw new Error(d?.error || `删除 ${id} 失败`);
+      }
+      setMemoSelected(new Set());
+      await loadMemories(memoProject, memoCharKey);
+    } catch (e: any) { setMemoError(e.message || '批量删除失败'); }
     finally { setMemoBusy(false); }
   }
 
@@ -1088,25 +1201,37 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
     finally { setWizMiniCreating(false); }
   }
   async function createWindow() {
-    if (!wizRecipeId || wizCreating) return;
-    setWizCreating(true); setWizError('');
-    try {
-      if (!envOk) throw new Error('环境变量没配好');
-      const body: any = { project, recipe_id: wizRecipeId };
-      const title = wizTitle.trim();
-      if (title) body.title = title;
-      const ck = wizCharKey.trim();
-      if (ck) body.char_key = ck;
-      const res = await fetch(`${base}/api/oc/desk/windows`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const d = await res.json().catch(() => null);
-      if (!d || d.success !== true) throw new Error(d?.error || '开窗失败(服务端没确认成功)');
-      setWizardOpen(false);
-      setWinNonce((n) => n + 1);
-      enterWindow(d.id);
-    } catch (e: any) { setWizError(e.message || '开窗失败'); }
-    finally { setWizCreating(false); }
-  }
+      if (!wizRecipeId || wizCreating) return;
+      setWizCreating(true); setWizError('');
+      try {
+        if (!envOk) throw new Error('环境变量没配好');
+        const selected = selectedCharKeys.filter((k) => projectCharCards.includes(k));
+        const body: any = { project, recipe_id: wizRecipeId };
+        const title = wizTitle.trim();
+        if (title) body.title = title;
+        // 兼容：单选时仍走 char_key，多选时取首个作主 char_key，其余进 vars.selected_char_keys（task-30）
+        if (selected.length === 1) body.char_key = selected[0];
+        else if (selected.length > 1) body.char_key = selected[0];
+        else {
+          const ck = wizCharKey.trim();
+          if (ck) body.char_key = ck;
+        }
+        const res = await fetch(`${base}/api/oc/desk/windows`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const d = await res.json().catch(() => null);
+        if (!d || d.success !== true) throw new Error(d?.error || '开窗失败(服务端没确认成功)');
+        // 多选持久化到窗口 vars，供装配侧 deskAssemble 读取选中集合（跨会话记住 + 带入生成）
+        if (selected.length) {
+          try {
+            await fetch(`${base}/api/oc/desk/windows/${d.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ vars: { selected_char_keys: selected } }) });
+          } catch {}
+        }
+        setWizardOpen(false);
+        setWinNonce((n) => n + 1);
+        enterWindow(d.id);
+      } catch (e: any) { setWizError(e.message || '开窗失败'); }
+      finally { setWizCreating(false); }
+    }
 
   // ══════════════════════════ 写作屏 ══════════════════════════
   const [curWindowId, setCurWindowId] = useState<string | null>(null);
@@ -1621,6 +1746,16 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
     loadWindow(id, false, genRef.current);
     try { const d = localStorage.getItem(`oc_desk_draft_${id}`); setInput(d || ''); } catch { setInput(''); }
   }
+
+  // 剧情CG模式外来进入：StoryRoom 创建新窗后自动切入
+  useEffect(() => {
+    if (autoEnterWindowId) {
+      void enterWindow(autoEnterWindowId);
+      onAutoEnterConsumed?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoEnterWindowId]);
+
   async function backToList() {
     // 换配方PUT在飞时不许离窗:离窗后立刻重进会让canonical加载读到旧recipe_id,
     // 而成功回写又被世界闸丢弃且无人补对账——前端从此显示旧配方、后端却已是新配方。PUT亚秒级,
@@ -4489,6 +4624,57 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
           })}
         </div>
 
+        {/* task-30 角色块多选：按项目平铺该项目下已导入角色卡，块状可点击多选，点即选中，跨会话记住 */}
+        <div className="card" style={{ ...cardStyle, padding: '16px 18px', marginBottom: 18 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+            <span className="serc" style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink-deep)' }}>角色{selectedCharKeys.length ? `· 已选 ${selectedCharKeys.length}` : ''}</span>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <span style={{ fontSize: 11, color: 'var(--ink2)' }}>{projectCharCards.length ? `${projectCharCards.length} 张` : '该项目暂无角色卡'}</span>
+              {selectedCharKeys.length > 0 && (
+                <button onClick={clearSelectedChars} className="serc" style={{ fontSize: 11, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>清空</button>
+              )}
+            </div>
+          </div>
+          {projectCharCards.length === 0 ? (
+            <div style={{ fontSize: 12.5, color: 'var(--ink2)', lineHeight: 1.6 }}>去文具盒·世界书导入角色卡（is_char 角色行），这里会按项目平铺为可点大块</div>
+          ) : (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+              {projectCharCards.map((name) => {
+                const selected = selectedCharKeys.includes(name);
+                return (
+                  <button
+                    key={name}
+                    onClick={() => toggleSelectedChar(name)}
+                    className="serc"
+                    title={selected ? '已选中，再点取消' : '点一下选中'}
+                    style={{
+                      minHeight: 44,
+                      minWidth: 88,
+                      padding: '10px 14px',
+                      borderRadius: 14,
+                      fontSize: 13.5,
+                      lineHeight: 1.3,
+                      cursor: 'pointer',
+                      fontFamily: 'inherit',
+                      border: selected ? '1.5px solid var(--accent)' : '1px solid var(--line-soft)',
+                      background: selected ? 'var(--scale-2)' : 'var(--card-bg)',
+                      color: selected ? 'var(--card-bg)' : 'var(--ink-body)',
+                      boxShadow: selected ? '0 2px 10px var(--card-shadow)' : 'none',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      userSelect: 'none',
+                    }}
+                  >
+                    {selected && <span style={{ fontSize: 12 }}>✓</span>}
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 120 }}>{name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
         {winDelError && <div style={{ fontSize: 12.5, color: '#c2693f', marginBottom: 12 }}>{winDelError}</div>}
 
         {winListLoading ? (
@@ -4545,6 +4731,11 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
             ))}
           </div>
         )}
+
+        {/* 26A 剧情大纲双分支一键开新窗 */}
+        <div style={{ marginBottom: 16 }}>
+          <PlotOutlineLauncher base={base} envOk={envOk} project={project} selectedCharKeys={selectedCharKeys} onCreated={(newId) => { setWinNonce((n) => n + 1); enterWindow(newId); }} />
+        </div>
 
         {/* + 开新窗 向导(三步:①项目=当前tab ②配方 ③标题可选) */}
         {wizardOpen && (
@@ -4651,8 +4842,56 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
                     <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink2)', letterSpacing: 1.5, margin: '18px 0 8px' }}>③ 标题(可选)</div>
                     <input value={wizTitle} onChange={(e) => setWizTitle(e.target.value)} placeholder="不填就叫「未命名窗口」" style={{ ...inputStyle, marginBottom: 18 }} />
 
-                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink2)', letterSpacing: 1.5, margin: '18px 0 8px' }}>④ 角色名(可选,填了同角色跨窗聚合记忆)</div>
-                    <input value={wizCharKey} onChange={(e) => setWizCharKey(e.target.value)} placeholder="比如「她」;不填=共享区" style={{ ...inputStyle, marginBottom: 18 }} />
+                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink2)', letterSpacing: 1.5, margin: '18px 0 8px' }}>④ 角色{selectedCharKeys.length ? `· 已选 ${selectedCharKeys.length}` : '(可多选，点即生效)'}</div>
+                      <div style={{ marginBottom: 12 }}>
+                        {projectCharCards.length === 0 ? (
+                          <div style={{ fontSize: 12.5, color: 'var(--ink2)', lineHeight: 1.6 }}>该项目暂无角色卡，去文具盒·世界书导入角色卡后可点选</div>
+                        ) : (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                            {projectCharCards.map((name) => {
+                              const selected = selectedCharKeys.includes(name);
+                              return (
+                                <button
+                                  key={name}
+                                  onClick={() => toggleSelectedChar(name)}
+                                  className="serc"
+                                  title={selected ? '已选中，再点取消' : '点一下选中'}
+                                  style={{
+                                    minHeight: 44,
+                                    minWidth: 72,
+                                    padding: '10px 12px',
+                                    borderRadius: 12,
+                                    fontSize: 13,
+                                    lineHeight: 1.3,
+                                    cursor: 'pointer',
+                                    fontFamily: 'inherit',
+                                    border: selected ? '1.5px solid var(--accent)' : '1px solid var(--line-soft)',
+                                    background: selected ? 'var(--scale-2)' : 'var(--card-bg)',
+                                    color: selected ? 'var(--card-bg)' : 'var(--ink-body)',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: 4,
+                                    userSelect: 'none',
+                                  }}
+                                >
+                                  {selected && <span style={{ fontSize: 11 }}>✓</span>}
+                                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 100 }}>{name}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                        <div style={{ marginTop: 8, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: 11, color: 'var(--ink2)' }}>点即选中/取消，无需确认{selectedCharKeys.length ? ` · 已选 ${selectedCharKeys.length}` : ''}</span>
+                          {selectedCharKeys.length > 0 && (
+                            <button onClick={clearSelectedChars} className="serc" style={{ fontSize: 11, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>清空</button>
+                          )}
+                        </div>
+                      </div>
+                      <details style={{ marginBottom: 18 }}>
+                        <summary style={{ fontSize: 11, cursor: 'pointer', color: 'var(--ink2)', userSelect: 'none' }}>手输兜底（旧）</summary>
+                        <input value={wizCharKey} onChange={(e) => setWizCharKey(e.target.value)} placeholder="比如「她」;不填=共享区" style={{ ...inputStyle, marginTop: 6 }} />
+                      </details>
 
                     {wizError && <div style={{ fontSize: 13, color: '#c2693f', marginBottom: 12 }}>{wizError}</div>}
                     <button
@@ -4793,7 +5032,7 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
                 </span>
               </div>
               {/* 操作行:手动总结 / Compact / 回退 */}
-              <div className="flex-none flex items-center gap-2 flex-wrap" style={{ padding: '6px 26px 12px' }}>
+              <div className="flex-none flex items-center gap-2 flex-wrap" style={{ padding: '6px 26px 8px' }}>
                 <button
                   className="serc"
                   onClick={runSummarize}
@@ -4829,6 +5068,44 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
                   </select>
                 )}
               </div>
+              {/* 批量操作行:勾选→批量删除 */}
+              {!memoLoading && memoGroups.length > 0 && (
+                <div className="flex-none flex items-center gap-2 flex-wrap" style={{ padding: '0 26px 8px' }}>
+                  <span style={{ fontSize: 12, color: 'var(--ink2)' }}>批量：已选 {memoSelected.size} 条</span>
+                  <button
+                    className="serc"
+                    onClick={() => {
+                      const allIds = memoGroups.flatMap((g) => g.items.map((m) => m.id));
+                      if (memoSelected.size === allIds.length) clearMemoSelect(); else selectAllMemos(allIds);
+                    }}
+                    disabled={memoBusy}
+                    style={{ ...pillStyle, fontSize: 12, padding: '4px 10px', opacity: memoBusy ? 0.5 : 1 }}
+                  >
+                    {memoSelected.size > 0 && memoSelected.size === memoGroups.flatMap((g) => g.items.map((m) => m.id)).length ? '取消全选' : '全选'}
+                  </button>
+                  {memoSelected.size > 0 && (
+                    <>
+                      <button
+                        className="serc"
+                        onClick={clearMemoSelect}
+                        disabled={memoBusy}
+                        style={{ ...pillStyle, fontSize: 12, padding: '4px 10px', opacity: memoBusy ? 0.5 : 1 }}
+                      >
+                        清空
+                      </button>
+                      <button
+                        className="serc"
+                        onClick={bulkDeleteMemos}
+                        disabled={memoBusy}
+                        title="批量删除选中的记忆"
+                        style={{ ...pillStyle, fontSize: 12, padding: '4px 10px', color: '#c2693f', borderColor: '#e8b4a0', opacity: memoBusy ? 0.5 : 1 }}
+                      >
+                        批量删除 ({memoSelected.size})
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
               <div style={{ margin: '0 26px', borderTop: '1px dashed var(--dash-line)' }} />
               <div className="flex-1 overflow-y-auto" style={{ padding: '16px 26px 26px' }}>
                 {memoNote && <div style={{ fontSize: 12.5, color: 'var(--ink2)', marginBottom: 12 }}>{memoNote}</div>}
@@ -4872,7 +5149,7 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
                                 /* 人设锚定区:量少,直接平铺(设计 8.2:主题分组子标题不展示) */
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                                   {layerGroups.flatMap((g) => g.items).map((m) => (
-                                    <MemoCard key={m.id} m={m} delStage={memoDelStage[m.id] || 0} onEdit={() => openMemoEdit(m)} onDelete={() => deleteMemoGesture(m.id)} />
+                                    <MemoCard key={m.id} m={m} delStage={memoDelStage[m.id] || 0} selected={memoSelected.has(m.id)} onEdit={() => openMemoEdit(m)} onDelete={() => deleteMemoGesture(m.id)} onToggle={() => toggleMemoSelect(m.id)} />
                                   ))}
                                 </div>
                               ) : (
@@ -4885,7 +5162,7 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
                                       </div>
                                       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                                         {g.items.map((m) => (
-                                          <MemoCard key={m.id} m={m} delStage={memoDelStage[m.id] || 0} onEdit={() => openMemoEdit(m)} onDelete={() => deleteMemoGesture(m.id)} />
+                                          <MemoCard key={m.id} m={m} delStage={memoDelStage[m.id] || 0} selected={memoSelected.has(m.id)} onEdit={() => openMemoEdit(m)} onDelete={() => deleteMemoGesture(m.id)} onToggle={() => toggleMemoSelect(m.id)} />
                                         ))}
                                       </div>
                                     </div>

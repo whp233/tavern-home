@@ -11,7 +11,7 @@
 
 // 召回参数的解析/夹取只此一份,住在装配引擎那边(它是真正用这三个数的人),这里 import 过来复用
 // ——两处各写一套夹取范围,迟早出现"前端存进去了、装配时又被夹掉"这种最难查的不生效。
-import { parseRecallSettings, RECALL_DEFAULTS, LORE_CATEGORIES, LORE_CATEGORY_SQL } from '../chat/deskAssemble';
+import { parseRecallSettings, RECALL_DEFAULTS, LORE_CATEGORIES, LORE_CATEGORY_SQL } from '../chat/deskAssemble.ts';
 
 interface DeskPanelsEnv {
   OC_DB: D1Database;
