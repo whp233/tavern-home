@@ -37,14 +37,34 @@ jobs:
 
       - name: cap add android (if missing)
         run: |
-          if [ ! -d android ]; then npx cap add android; fi
-          # re-apply dual-ABI patch if cap overwrote it
-          if ! grep -q "abiFilters 'arm64-v8a'" android/app/build.gradle; then
-            echo "re-apply dual ABI patch"
-            # patch is already in repo's android/app/build.gradle, copy it
-            cp android/app/build.gradle android/app/build.gradle.bak || true
-            cp ../android/app/build.gradle android/app/build.gradle 2>/dev/null || true
+          if [ ! -f android/gradlew ]; then
+            echo "android shell missing gradlew -> npx cap add android"
+            npx cap add android
+          else
+            echo "android shell exists, skip cap add"
           fi
+          # re-apply dual-ABI patch if missing (cap may overwrite)
+          if ! grep -q "abiFilters 'arm64-v8a'" android/app/build.gradle; then
+            echo "apply dual ABI patch: ndk abiFilters + splits"
+            python3 - << 'PY'
+          import pathlib, re
+          p = pathlib.Path("android/app/build.gradle")
+          t = p.read_text(encoding="utf-8")
+          if "abiFilters" not in t:
+              t = t.replace(
+                  "defaultConfig {",
+                  "defaultConfig {\n        ndk {\n            abiFilters 'arm64-v8a', 'armeabi-v7a'\n        }"
+              )
+          if "splits" not in t:
+              t = t.replace(
+                  "buildTypes {",
+                  "    splits {\n        abi {\n            enable true\n            reset()\n            include 'arm64-v8a', 'armeabi-v7a'\n            universalApk false\n        }\n    }\n\n    buildTypes {"
+              )
+          p.write_text(t, encoding="utf-8")
+          print("patched")
+          PY
+          fi
+          grep -q "abiFilters" android/app/build.gradle && echo "dual ABI OK" || (echo "patch failed"; exit 1)
 
       - name: cap sync
         run: npx cap sync android
