@@ -37,34 +37,24 @@ jobs:
 
       - name: cap add android (if missing)
         run: |
+          set -e
+          echo "PWD=$(pwd) ls frontend:"; ls -la | head -n 30
           if [ ! -f android/gradlew ]; then
             echo "android shell missing gradlew -> npx cap add android"
             npx cap add android
+            chmod +x android/gradlew || true
+            ls -la android/ | head -n 30
           else
             echo "android shell exists, skip cap add"
+            ls -la android/ | head -n 30
           fi
-          # re-apply dual-ABI patch if missing (cap may overwrite)
+          echo "=== android/app/build.gradle head ==="; head -n 80 android/app/build.gradle || true
           if ! grep -q "abiFilters 'arm64-v8a'" android/app/build.gradle; then
             echo "apply dual ABI patch: ndk abiFilters + splits"
-            python3 - << 'PY'
-          import pathlib, re
-          p = pathlib.Path("android/app/build.gradle")
-          t = p.read_text(encoding="utf-8")
-          if "abiFilters" not in t:
-              t = t.replace(
-                  "defaultConfig {",
-                  "defaultConfig {\n        ndk {\n            abiFilters 'arm64-v8a', 'armeabi-v7a'\n        }"
-              )
-          if "splits" not in t:
-              t = t.replace(
-                  "buildTypes {",
-                  "    splits {\n        abi {\n            enable true\n            reset()\n            include 'arm64-v8a', 'armeabi-v7a'\n            universalApk false\n        }\n    }\n\n    buildTypes {"
-              )
-          p.write_text(t, encoding="utf-8")
-          print("patched")
-          PY
+            python3 -c "import pathlib; p=pathlib.Path('android/app/build.gradle'); t=p.read_text(encoding='utf-8'); t=t.replace('defaultConfig {','defaultConfig {\n        ndk {\n            abiFilters 'arm64-v8a', 'armeabi-v7a'\n        }') if 'abiFilters' not in t else t; t=t.replace('buildTypes {','    splits {\n        abi {\n            enable true\n            reset()\n            include 'arm64-v8a', 'armeabi-v7a'\n            universalApk false\n        }\n    }\n\n    buildTypes {') if 'splits' not in t else t; p.write_text(t, encoding='utf-8'); print('patched')"
+            cat android/app/build.gradle | head -n 60
           fi
-          grep -q "abiFilters" android/app/build.gradle && echo "dual ABI OK" || (echo "patch failed"; exit 1)
+          grep -q "abiFilters" android/app/build.gradle && echo "dual ABI OK" || (echo "patch failed"; cat android/app/build.gradle; exit 1)
 
       - name: cap sync
         run: npx cap sync android
