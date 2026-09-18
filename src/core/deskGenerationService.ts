@@ -80,12 +80,16 @@ export class DeskGenerationService {
     if (!generated.ok) return { success: false, error: generated.kind, detail: generated.detail, usage: generated.usage };
     if (generated.stopReason && generated.stopReason !== 'end_turn' && generated.stopReason !== 'stop') {
       const truncated = generated.stopReason === 'max_tokens' || generated.stopReason === 'length';
-      return { success: false, error: truncated ? 'limit' : 'protocol', detail: generated.stopReason, usage: generated.usage };
+      // prompt-diet: 非截断的未知 stopReason 按完成处理，不再判 protocol 重试，减少 thinking 规划负担
+      if (truncated) return { success: false, error: 'limit', detail: generated.stopReason, usage: generated.usage };
+      // 其它未知原因(如 tool_calls)按完成容错，不中断
     }
     if (input.signal?.aborted) return { success: false, error: 'aborted', usage: generated.usage };
     const parsed = parseStateBoard(generated.text);
     const stateBoard = parsed.board ?? input.stateBoard;
-    const content = unwrapContentTag(parsed.content);
+    // prompt-diet: 抽不到 <content> 就用原文，不判 empty 由上层处理；围栏抽取失败按正文容错
+    const rawContent = parsed.content ?? generated.text;
+    const content = unwrapContentTag(rawContent);
     if (!content.trim()) return { success: false, error: 'empty', usage: generated.usage };
     const { boardBefore: _boardBefore, boardAfter: _boardAfter, stateBoardStale: _stateBoardStale, commitToken: _commitToken, ...safeReport } = input.report;
     const commit: DeskTurnCommit = { content, thinking: generated.thinking.trim() || null,

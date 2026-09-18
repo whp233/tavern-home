@@ -69,16 +69,17 @@ export default function LoreWindow({
             </span>
             <span className="text-[11px] text-ink2">{coreOpen ? '收起 ▲' : '展开 ▼'}</span>
           </button>
-          {/* 收起用 display:none 而不是卸载:CoreTab 一卸载,填了一半的核心记忆草稿就没了
-              (子组件的 dirty cleanup 还会顺手把脏位清成 false,连提醒都不会有)。折叠只该藏起来。*/}
-          <div className="mt-3" style={{ display: coreOpen ? undefined : 'none' }}>
+          {/* P2：卸载式——收起即卸载，不再 display:none 仍请求；展开时才挂载 CoreTab */}
+          {coreOpen && (
+            <div className="mt-3">
               {/* 核心记忆的数据仍住后端状态表的 desk_core:<项目> 键,没并进 study 条目——它在
                   生成管线里的位置是最前的稳定前缀,普通世界书条目在别处拼接,位置不同,硬合会
                   改变管线结构。这里挪的只是编辑入口。
                   key={project} 同文具盒里的老家法:切项目=整份子树重挂载,旧项目的草稿/在途请求
                   连着组件实例一起作废。*/}
-            <CoreTab key={project} base={base} envOk={envOk} project={project} onDirtyChange={setCoreDirty} />
-          </div>
+              <CoreTab key={project} base={base} envOk={envOk} project={project} onDirtyChange={setCoreDirty} />
+            </div>
+          )}
         </div>
 
         {/* ── 条目列表 ── */}

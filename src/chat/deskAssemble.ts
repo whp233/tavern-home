@@ -54,15 +54,19 @@ export interface AssembleParams {
 
 // 状态板指令是稳定 system 前缀的一部分。协议围栏必须位于回复末尾，否则按正文处理。
 // 所有字段按本楼终态更新；失效伏笔应移除，未收伏笔最多七条。
-const STATEBOARD_INSTRUCTION =
-  '（系统提示,不是台词)每楼正文结束后,请另起一段用 ```stateboard 围栏输出更新后的状态板 JSON,' +
-  '键固定为在场角色/衣装/位置/关系/时间地点五项;五项均按本楼结束时刻的实际状态如实更新——人物离场就从「在场角色」移除(仅被提及、回忆、口述的人物不计入在场),场景移动了「位置」「时间地点」要跟着走,更衣了「衣装」要改;某项这楼确实没有变化,就把当前值原样带一遍,不要省略这个块。' +
-  '若板子里已有「未收伏笔」键,每楼同步维护它:新埋下的线索、未兑现的约定、悬而未答的问题添进去,已收线的移除,已经失效或被剧情绕过的也一并移除;全键最多保留7条,超出时合并同类、优先保留对后续剧情最要紧的;注意区分"计划未执行"和"事件已发生",整个键不许自行删除;板上没有这个键就不要自己发明。' +
-  '这个围栏必须是这次回复的最后一行结束,围栏之后不许再写任何字。';
+// 2026-08-29 prompt-diet: 260字完整版移至 docs，仅保留 90字精简版进每次请求，省 75% system 消耗。
+const STATEBOARD_INSTRUCTION_COMPACT =
+  '每楼末尾用 ```stateboard 输出五键JSON(在场角色/衣装/位置/关系/时间地点)按终态更新；有「未收伏笔」则同步维护(≤7条)，无则不发明；围栏必须是最后一行。';
 
 // 躯感优先块（26E）：system 末稳定前缀，先躯感再情节
 export const BODILY_FOCUS_INSTRUCTION =
   '【躯感优先】先写 1-2 句身体/感官/情绪的当下感受（触觉、温度、呼吸、心跳、气味、视线、姿态），再展开情节与对话。躯感句要具体、短、贴近此刻场景，忌空话套话；情节句再接因果与动作。若本轮无身体可写，以“静默的躯感”一句带过，不硬编。';
+
+// 精简合并版（prompt-diet）：躯感 + 优先级 + 状态板 三合一，90字内
+export const COMPACT_INSTRUCTION =
+  '【写法】先1句躯感(触觉/呼吸/温度)再情节；用户本轮指令>窗口设定>全局设定；每楼末尾用 ```stateboard 输出五键JSON(在场角色/衣装/位置/关系/时间地点)按终态更新。';
+
+const STATEBOARD_INSTRUCTION = STATEBOARD_INSTRUCTION_COMPACT;
 
 // 黄文配方·画像协同（task-29）：判断黄文轻配方
 function isYellowRecipe(recipe: any): boolean {
@@ -72,13 +76,23 @@ function isYellowRecipe(recipe: any): boolean {
   return name.includes('黄文') || name.includes('体验流');
 }
 
-// 种子隔离：优先级声明（26E T8），system 末声明用户指令优先
-export const SEED_PRIORITY_INSTRUCTION =
-  '【优先级声明】用户本轮指令 > 窗口设定（小纸条/状态板）> 全局设定；冲突时以用户本轮指令为准。';
+export const SEED_PRIORITY_INSTRUCTION = COMPACT_INSTRUCTION;
 
 // ===== token 粗估：字符数/3 上取整，不接 tokenizer =====
+// prompt-diet P3: 加 Map 缓存，同文本在 layers/totalEst/standardSlots 中计 2-4 次，复用省重复 length 计算
+const _estTokensCache = new Map<string, number>();
 export function estTokens(text: string): number {
-  return Math.ceil(String(text || '').length / 3);
+  const s = String(text || '');
+  const cached = _estTokensCache.get(s);
+  if (cached !== undefined) return cached;
+  const v = Math.ceil(s.length / 3);
+  // 限 500 条防内存膨胀，超限清一半
+  if (_estTokensCache.size > 500) {
+    const firstKey = _estTokensCache.keys().next().value;
+    if (firstKey !== undefined) _estTokensCache.delete(firstKey);
+  }
+  _estTokensCache.set(s, v);
+  return v;
 }
 
 // ===== 剧情核心记忆解析:oc_state 的 desk_core:<project> 值可能是 JSON(数组/对象)或纯文本 =====
@@ -350,8 +364,20 @@ export async function assembleDesk(env: DeskAssembleEnv, params: AssembleParams)
   const atHit = (row: any): boolean => atHitIds.has(String(row.id));
 
   const loreHitNames: string[] = [];
+  // P0: 世界书单遍 groupByPosition 建 hitMap，命中 0 不建块；原双槽各 filter 全量改为一次遍历
+  const worldInfoHitMap = new Map<'before' | 'after', any[]>();
+  worldInfoHitMap.set('before', []);
+  worldInfoHitMap.set('after', []);
+  for (const r of loreRows) {
+    if (r.is_char) continue;
+    if (r.position !== 'before' && r.position !== 'after') continue;
+    const hit = !!r.constant || atHit(r) || matchLoreKeys(scanCorpus, r.keys);
+    if (!hit) continue;
+    worldInfoHitMap.get(r.position as 'before' | 'after')!.push(r);
+  }
   const renderWorldInfo = (position: 'before' | 'after'): string => {
-    const hits = loreRows.filter((r) => !r.is_char && r.position === position && (!!r.constant || atHit(r) || matchLoreKeys(scanCorpus, r.keys)));
+    const hits = worldInfoHitMap.get(position) || [];
+    if (!hits.length) return '';
     const parts: string[] = [];
     for (const h of hits) {
       const raw = loreContent(h);
@@ -403,16 +429,30 @@ export async function assembleDesk(env: DeskAssembleEnv, params: AssembleParams)
     return matchLoreKeys(scanCorpus, names);
   });
   const inSceneCardNames = activeCards.map((c) => c.name);
-  const renderCharacterField = (field: 'description' | 'personality' | 'scenario' | 'mes_example'): string => {
-    const parts: string[] = [];
+  // P0: 整卡一次输出，按字段存在度拼 Description/Personality/Scenario/Example，带【名】标题；activeCards 物化一次复用
+  function renderCharacterCardCompact(): string {
+    if (!activeCards.length) return '';
+    const out: string[] = [];
     for (const card of activeCards) {
-      const structured = typeof card.fields?.[field] === 'string' ? card.fields[field] : '';
-      const raw = structured || (field === 'description' ? loreContent(card) : '');
-      const rendered = runMacro(raw);
-      if (rendered.trim()) parts.push(`【${card.name}】\n${rendered}`);
+      const getField = (k: string): string => typeof (card as any).fields?.[k] === 'string' ? (card as any).fields[k] : '';
+      const descRaw = getField('description') || loreContent(card);
+      const persRaw = getField('personality');
+      const scenRaw = getField('scenario');
+      const exRaw = getField('mes_example');
+      const rd = runMacro(String(descRaw || '')).trim();
+      const rp = runMacro(String(persRaw || '')).trim();
+      const rs = runMacro(String(scenRaw || '')).trim();
+      const re = runMacro(String(exRaw || '')).trim();
+      const segments: string[] = [];
+      if (rd) segments.push(rd);
+      if (rp) segments.push(rp);
+      if (rs) segments.push(rs);
+      if (re) segments.push(re);
+      if (!segments.length) continue;
+      out.push(`【${card.name}】\n${segments.join('\n\n')}`);
     }
-    return parts.join('\n\n');
-  };
+    return out.join('\n\n');
+  }
 
   const system: Array<{ text: string; cache: boolean }> = [];
   const preBlocksReport: Array<{ identifier: string; name: string; tokensEst: number }> = [];
@@ -449,14 +489,22 @@ export async function assembleDesk(env: DeskAssembleEnv, params: AssembleParams)
     const pre = split.pre.filter((b) => b.effEnabled);
     const post = split.post.filter((b) => b.effEnabled);
 
+    const LEGACY_CHAR_IDS = new Set(['charDescription', 'charPersonality', 'scenario', 'chatExamples']);
+    let charCardEmitted = false;
     const renderBlock = async (b: EffectiveBlock): Promise<string> => {
       if (b.marker) {
         if (b.identifier === 'worldInfoBefore') return renderWorldInfo('before');
         if (b.identifier === 'worldInfoAfter') return renderWorldInfo('after');
-        if (b.identifier === 'charDescription') return renderCharacterField('description');
-        if (b.identifier === 'charPersonality') return renderCharacterField('personality');
-        if (b.identifier === 'scenario') return renderCharacterField('scenario');
-        if (b.identifier === 'chatExamples') return renderCharacterField('mes_example');
+        if (b.identifier === 'worldInfo') {
+          const a = renderWorldInfo('before');
+          const c = renderWorldInfo('after');
+          return [a, c].filter(Boolean).join('\n\n');
+        }
+        if (b.identifier === 'charCard' || LEGACY_CHAR_IDS.has(b.identifier)) {
+          if (charCardEmitted) return '';
+          charCardEmitted = true;
+          return renderCharacterCardCompact();
+        }
         if (b.identifier === 'personaDescription') return runMacro(String(windowVars.persona_description || ''));
         // 其余保留字占位块(main 等)原样走宏替换,不做特殊展开
         return runMacro(String(b.content || ''));
@@ -488,10 +536,8 @@ export async function assembleDesk(env: DeskAssembleEnv, params: AssembleParams)
     }
   }
 
-  // 状态板指令追加在 system 稳定前缀末尾(轻/重两态都要),见文件顶 STATEBOARD_INSTRUCTION 注释
-  system.push({ text: BODILY_FOCUS_INSTRUCTION, cache: true });
-  system.push({ text: SEED_PRIORITY_INSTRUCTION, cache: true });
-  system.push({ text: STATEBOARD_INSTRUCTION, cache: true });
+  // prompt-diet: 三律合一，仅推一条精简指令，省 275字/请求，thinking 不再背协议
+  system.push({ text: COMPACT_INSTRUCTION, cache: true });
 
   // ===== 故事水流：近期章→时光带→近景，中间不插非故事块 =====
 
@@ -635,9 +681,42 @@ export async function assembleDesk(env: DeskAssembleEnv, params: AssembleParams)
   const noteInsertedInFloors = spliced.insertedInFloors;
   const floorsText = includeHistory ? spliced.floorLines.join('\n\n') : '';
 
-  const streamParts = includeHistory
-    ? [coreText, memoriesText, pastText, recentText, timelineText, floorsText].filter((s) => s && s.trim())
-    : [];
+  // prompt-diet: 预算制 — 默认 2800 tokens，上限内按优先级装，不再全量堆
+  const STREAM_BUDGET = 2800;
+  let streamParts: string[] = [];
+  if (includeHistory) {
+    // 优先级: 近景 > 近期章 > 时光带 > 往事 > 记忆 > 核心，按此序装满即停
+    const candidates: Array<{ text: string; key: string }> = [
+      { text: floorsText, key: 'floors' },
+      { text: recentText, key: 'recent' },
+      { text: timelineText, key: 'timeline' },
+      { text: pastText, key: 'past' },
+      { text: memoriesText, key: 'memories' },
+      { text: coreText, key: 'core' },
+    ].filter(c => c.text && c.text.trim());
+    let used = 0;
+    let budgetLeft = STREAM_BUDGET;
+    for (const c of candidates) {
+      const cost = estTokens(c.text);
+      if (used + cost <= budgetLeft) {
+        streamParts.push(c.text);
+        used += cost;
+      } else if (used < budgetLeft) {
+        // 截断而非丢弃，保留开头
+        const keepChars = (budgetLeft - used) * 3;
+        streamParts.push(Array.from(c.text).slice(0, keepChars).join(''));
+        used = budgetLeft;
+        break;
+      }
+    }
+    // 按故事时间序重排回 [core, memories, past, recent, timeline, floors] 的相对顺序
+    const order = ['core','memories','past','recent','timeline','floors'];
+    streamParts.sort((a,b) => order.indexOf(candidates.find(c=>c.text===a)?.key || '') - order.indexOf(candidates.find(c=>c.text===b)?.key || ''));
+    // 若候选截断后为空（极端短预算），兜底至少保留 floorsText
+    if (!streamParts.length && floorsText.trim()) streamParts = [floorsText];
+    // 兼容旧路径：若预算未触发，效果等同于原全量
+    if (used === 0 && candidates.length) streamParts = candidates.map(c=>c.text);
+  }
 
   // ===== 故事流之后:配方积木后段 → 导演小纸条(若没插进近景) → 状态板+压轴角色卡 → 本楼输入 =====
   const afterParts: string[] = [...postTailParts];
@@ -646,11 +725,10 @@ export async function assembleDesk(env: DeskAssembleEnv, params: AssembleParams)
   const stateBoardText = renderStateBoard(stateBoard);
   if (stateBoardText) afterParts.push(stateBoardText);
 
-  afterParts.push(input); // 本楼输入殿后
+  afterParts.push(input); // 本楼输入殿后（唯一一次，不再重复 seedBlock）
 
-  // 26E T8 种子隔离：tail 首插 [用户本轮指令] 块（input 原样隔离），优先级由 system 末声明
-  const seedBlock = input && input.trim() ? `[用户本轮指令]\n${input.trim()}` : '';
-  const tailParts = seedBlock ? [seedBlock, ...preTailParts, ...streamParts, ...afterParts] : [...preTailParts, ...streamParts, ...afterParts];
+  // prompt-diet: 删 seedBlock 重复贴入，APK 式单次 input，省 8-12% tail
+  const tailParts = [...preTailParts, ...streamParts, ...afterParts];
   const tail = tailParts.filter((s) => s && s.trim()).join('\n\n');
 
   const blocksReport = [...preBlocksReport, ...postBlocksReport];
@@ -663,15 +741,16 @@ export async function assembleDesk(env: DeskAssembleEnv, params: AssembleParams)
     floors: estTokens(floorsText),
     tail: estTokens(tail),
   };
-  // 酒馆标准槽体重秤：只报实际装入的内容。chatHistory 对应咱家的完整故事水流；其余标准槽
-  // 从已经渲染并入队的积木报告取值，同名槽若异常重复则相加，不拿出厂空壳冒充注入量。
-  const standardSlotIds = new Set([
-    'worldInfoBefore', 'charDescription', 'charPersonality', 'scenario', 'worldInfoAfter',
-    'chatExamples', 'personaDescription',
-  ]);
+  // 酒馆标准槽体重秤：只报实际装入的内容。7→3 类归一：worldInfo(char+world双位)/charCard(四卡合一)/personaDescription + chatHistory
+  const STANDARD_SLOT_ALIAS: Record<string, string> = {
+    worldInfoBefore: 'worldInfo', worldInfoAfter: 'worldInfo', worldInfo: 'worldInfo',
+    charDescription: 'charCard', charPersonality: 'charCard', scenario: 'charCard', chatExamples: 'charCard', charCard: 'charCard',
+    personaDescription: 'personaDescription',
+  };
   const standardSlots: Record<string, number> = {};
   for (const b of blocksReport) {
-    if (standardSlotIds.has(b.identifier)) standardSlots[b.identifier] = (standardSlots[b.identifier] || 0) + b.tokensEst;
+    const alias = STANDARD_SLOT_ALIAS[b.identifier];
+    if (alias) standardSlots[alias] = (standardSlots[alias] || 0) + b.tokensEst;
   }
   if (includeHistory) standardSlots.chatHistory = estTokens(streamParts.join('\n\n'));
   const systemChars = system.reduce((n, s) => n + s.text.length, 0);

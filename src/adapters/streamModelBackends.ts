@@ -19,6 +19,16 @@ export function buildAnthropicUserContent(args: StreamChatArgs): string | Array<
   ];
 }
 
+// SSE 公共：Abort/定时/解码/缓冲/行解析/usage/stopReason（weight==='light' 的 COMPACT 跳过由 deskAssemble 侧已条件化，此处不重复推）
+const extractSseData=(l:string)=>{const t=l.trim();return t.startsWith('data:')?(t.slice(5).trim()||null):null}; const isSseDone=(r:string)=>r==='[DONE]';
+const createAbortScope=(a:StreamChatArgs,tm?:number)=>{const c=new AbortController();let to=false;const ab=()=>c.abort();a.signal?.addEventListener('abort',ab,{once:true});if(a.signal?.aborted)c.abort();const ti=setTimeout(()=>{to=true;c.abort()},tm??480000);return{controller:c,timer:ti,abort:ab,get timedOut(){return to},cleanup(){clearTimeout(ti);a.signal?.removeEventListener('abort',ab)}}};
+async function pumpSseLines(b:ReadableStream<Uint8Array>,onLine:(l:string)=>Promise<void>){const r=b.getReader(),d=new TextDecoder();let buf='',eof=false;try{while(true){const{done,value}=await r.read();if(done){eof=true;break}buf+=d.decode(value,{stream:true});const ls=buf.split('\n');buf=ls.pop()||'';for(const l of ls)await onLine(l)}buf+=d.decode();if(buf)await onLine(buf)}finally{if(!eof)try{await r.cancel()}catch{}}}
+const applyAnthropicStartUsage=(u:ModelUsage,v:any)=>{u.input+=Number(v.input_tokens)||0;u.cacheRead+=Number(v.cache_read_input_tokens)||0;u.cacheWrite+=Number(v.cache_creation_input_tokens)||0};
+const applyAnthropicDeltaUsage=(u:ModelUsage,v:any)=>{u.output=Number(v?.output_tokens)||u.output};
+const applyOpenAiUsage=(u:ModelUsage,v:any)=>{if(!v||typeof v!=='object')return;u.input=Number(v.prompt_tokens)||u.input;u.output=Number(v.completion_tokens)||u.output;u.cacheRead=Number(v.prompt_cache_hit_tokens)||0;u.cacheWrite=Number(v.prompt_cache_miss_tokens)||0};
+const applyResponsesUsage=(u:ModelUsage,v:any)=>{if(!v||typeof v!=='object')return;u.input=Number(v.input_tokens??v.prompt_tokens)||u.input;u.output=Number(v.output_tokens??v.completion_tokens)||u.output;u.cacheRead=Number(v.input_tokens_details?.cached_tokens??0)||u.cacheRead};
+const isAnthropicOk=(r:string)=>r==='end_turn',isAnthropicTruncated=(r:string)=>r==='max_tokens',isOpenAiOk=(r:string)=>r==='stop',isOpenAiTruncated=(r:string)=>r==='length';
+
 export interface AnthropicBackendOptions { apiKey: string; baseUrl?: string; timeoutMs?: number; userId?: string; fetch?: Fetcher }
 
 export class AnthropicStreamBackend implements ModelBackend {
@@ -27,21 +37,18 @@ export class AnthropicStreamBackend implements ModelBackend {
   async streamChat(args: StreamChatArgs): Promise<StreamChatResult> {
     // baseUrl 只认 undefined=未配置;配了(含空串)就必须过 safeEndpoint,不许悄悄回落官方端点(codex增量审)。
     const endpoint = this.options.baseUrl === undefined ? 'https://api.anthropic.com/v1/messages' : safeEndpoint(this.options.baseUrl); if (!this.options.apiKey || !endpoint) return { ok: false, kind: 'config' };
-    const controller = new AbortController(); let timedOut = false; const abort = () => controller.abort();
-    args.signal?.addEventListener('abort', abort, { once: true }); if (args.signal?.aborted) controller.abort();
-    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, this.options.timeoutMs ?? 480_000);
+    const scope = createAbortScope(args, this.options.timeoutMs);
     let text = ''; let thinking = ''; const usage = ZERO_USAGE(); let stopReason = ''; let streamError = false; let messageStopped = false;
-    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null; let naturalEof = false; const blocks = new Map<number, 'text' | 'thinking' | 'redacted'>();
+    const blocks = new Map<number, 'text' | 'thinking' | 'redacted'>();
     const splitter = createLiteralThinkingSplitter(args.model,
       async (chunk) => { if (!chunk) return; text += chunk; await args.onEvent?.({ type: 'text', text: chunk }); },
       async (chunk) => { if (!chunk) return; thinking += chunk; await args.onEvent?.({ type: 'thinking', text: chunk }); }, true);
     try {
       const response = await (this.options.fetch || fetch)(endpoint, { method: 'POST', headers: { 'x-api-key': this.options.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-beta': 'extended-cache-ttl-2025-04-11', 'content-type': 'application/json' },
-        body: JSON.stringify({ ...buildModelParams(args.model), system: args.system.map((block) => block.cache ? { type: 'text', text: block.text, cache_control: { type: 'ephemeral', ttl: '1h' } } : { type: 'text', text: block.text }), messages: [{ role: 'user', content: buildAnthropicUserContent(args) }], ...(this.options.userId ? { metadata: { user_id: this.options.userId } } : {}) }), signal: controller.signal });
+        body: JSON.stringify({ ...buildModelParams(args.model), system: args.system.map((block) => block.cache ? { type: 'text', text: block.text, cache_control: { type: 'ephemeral', ttl: '1h' } } : { type: 'text', text: block.text }), messages: [{ role: 'user', content: buildAnthropicUserContent(args) }], ...(this.options.userId ? { metadata: { user_id: this.options.userId } } : {}) }), signal: scope.controller.signal });
       if (!response.ok || !response.body) return { ok: false, kind: 'http', detail: String(response.status) };
-      reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
       const consume = async (line: string) => {
-        const trimmed = line.trim(); if (!trimmed.startsWith('data:')) return; const raw = trimmed.slice(5).trim(); if (!raw) return;
+        const raw = extractSseData(line); if (raw === null) return;
         let event: any; try { event = JSON.parse(raw); } catch { return; }
         if (messageStopped) { streamError = true; return; }
         const index = Number(event.index); const validIndex = Number.isInteger(index) && index >= 0;
@@ -49,24 +56,23 @@ export class AnthropicStreamBackend implements ModelBackend {
         else if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') { if (!validIndex || blocks.get(index) !== 'text') streamError = true; else await splitter.feed(String(event.delta.text || '')); }
         else if (event.type === 'content_block_delta' && event.delta?.type === 'thinking_delta') { if (!validIndex || blocks.get(index) !== 'thinking') streamError = true; else { const chunk = String(event.delta.thinking || ''); thinking += chunk; await args.onEvent?.({ type: 'thinking', text: chunk }); } }
         else if (event.type === 'content_block_stop') { if (!validIndex || !blocks.delete(index)) streamError = true; }
-        else if (event.type === 'message_start') { const u = event.message?.usage || {}; usage.input += Number(u.input_tokens) || 0; usage.cacheRead += Number(u.cache_read_input_tokens) || 0; usage.cacheWrite += Number(u.cache_creation_input_tokens) || 0; await args.onEvent?.({ type: 'usage', usage: { input: usage.input, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite } }); }
-        else if (event.type === 'message_delta') { if (event.delta?.stop_reason) stopReason = String(event.delta.stop_reason); usage.output = Number(event.usage?.output_tokens) || usage.output; }
+        else if (event.type === 'message_start') { applyAnthropicStartUsage(usage, event.message?.usage || {}); await args.onEvent?.({ type: 'usage', usage: { input: usage.input, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite } }); }
+        else if (event.type === 'message_delta') { if (event.delta?.stop_reason) stopReason = String(event.delta.stop_reason); applyAnthropicDeltaUsage(usage, event.usage); }
         else if (event.type === 'message_stop') { if (!stopReason || blocks.size) streamError = true; messageStopped = true; }
         else if (event.type === 'error') streamError = true;
       };
-      while (true) { const { done, value } = await reader.read(); if (done) { naturalEof = true; break; } buffer += decoder.decode(value, { stream: true }); const lines = buffer.split('\n'); buffer = lines.pop() || ''; for (const line of lines) await consume(line); }
-      buffer += decoder.decode(); if (buffer) await consume(buffer); await splitter.flush(); await args.onEvent?.({ type: 'usage', usage });
+      await pumpSseLines(response.body, consume); await splitter.flush(); await args.onEvent?.({ type: 'usage', usage });
       if (args.signal?.aborted) return { ok: false, kind: 'aborted', usage };
       if (streamError || !messageStopped) return { ok: false, kind: 'protocol', detail: stopReason || 'missing accepted stop reason', usage };
-      if (stopReason === 'max_tokens') return { ok: false, kind: 'limit', detail: 'max_tokens', usage };
-      if (stopReason !== 'end_turn') return { ok: false, kind: 'protocol', detail: stopReason || 'missing accepted stop reason', usage };
+      if (isAnthropicTruncated(stopReason)) return { ok: false, kind: 'limit', detail: 'max_tokens', usage };
+      if (!isAnthropicOk(stopReason)) return { ok: false, kind: 'protocol', detail: stopReason || 'missing accepted stop reason', usage };
       if (!text) return { ok: false, kind: 'empty', usage };
       return { ok: true, terminal: 'clean', text, thinking, usage, stopReason };
     } catch (error: any) {
       if (args.signal?.aborted) return { ok: false, kind: 'aborted', usage };
-      if (timedOut || error?.name === 'AbortError') return { ok: false, kind: 'timeout', usage };
+      if (scope.timedOut || error?.name === 'AbortError') return { ok: false, kind: 'timeout', usage };
       return { ok: false, kind: 'fetch', detail: String(error?.message || error), usage };
-    } finally { if (reader && !naturalEof) try { await reader.cancel(); } catch {} clearTimeout(timer); args.signal?.removeEventListener('abort', abort); }
+    } finally { scope.cleanup(); }
   }
 }
 
@@ -169,32 +175,23 @@ export class OpenAIStreamBackend implements ModelBackend {
   async streamChat(args: StreamChatArgs): Promise<StreamChatResult> {
     const endpoint = openAiEndpoint(this.options.baseUrl, this.options.allowHttpLocalhost);
     if (!this.options.apiKey || !endpoint) return { ok: false, kind: 'config' };
-    const controller = new AbortController(); let timedOut = false; const abort = () => controller.abort();
-    args.signal?.addEventListener('abort', abort, { once: true }); if (args.signal?.aborted) controller.abort();
-    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, this.options.timeoutMs ?? 480_000);
+    const scope = createAbortScope(args, this.options.timeoutMs);
     let text = ''; let thinking = ''; const usage = ZERO_USAGE(); let finishReason = ''; let streamError = false; let gotDone = false;
-    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null; let naturalEof = false;
     const splitter = createLiteralThinkingSplitter(args.model,
       async (chunk) => { if (!chunk) return; text += chunk; await args.onEvent?.({ type: 'text', text: chunk }); },
       async (chunk) => { if (!chunk) return; thinking += chunk; await args.onEvent?.({ type: 'thinking', text: chunk }); }, true);
     try {
-      const response = await (this.options.fetch || fetch)(endpoint, { method: 'POST', headers: { authorization: `Bearer ${this.options.apiKey}`, 'content-type': 'application/json' }, body: JSON.stringify(openAiParams(args, this.options)), signal: controller.signal });
+      const response = await (this.options.fetch || fetch)(endpoint, { method: 'POST', headers: { authorization: `Bearer ${this.options.apiKey}`, 'content-type': 'application/json' }, body: JSON.stringify(openAiParams(args, this.options)), signal: scope.controller.signal });
       if (!response.ok || !response.body) return { ok: false, kind: 'http', detail: String(response.status) };
-      reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
       const consume = async (line: string) => {
-        const trimmed = line.trim(); if (!trimmed.startsWith('data:')) return; const raw = trimmed.slice(5).trim(); if (!raw) return;
-        if (raw === '[DONE]') { gotDone = true; return; }
+        const raw = extractSseData(line); if (raw === null) return;
+        if (isSseDone(raw)) { gotDone = true; return; }
         let event: any; try { event = JSON.parse(raw); } catch { streamError = true; return; }
         if (event.error) { streamError = true; return; }
         // usage 可能跟 finish_reason 同 chunk(DeepSeek),也可能独立成末 chunk(OpenAI 官方在
         // finish_reason 之后再发一条 choices:[] + usage 才 [DONE])——两种都先收账。
         const hasUsage = event.usage && typeof event.usage === 'object';
-        if (hasUsage) {
-          usage.input = Number(event.usage.prompt_tokens) || usage.input;
-          usage.output = Number(event.usage.completion_tokens) || usage.output;
-          usage.cacheRead = Number(event.usage.prompt_cache_hit_tokens) || 0;
-          usage.cacheWrite = Number(event.usage.prompt_cache_miss_tokens) || 0;
-        }
+        if (hasUsage) applyOpenAiUsage(usage, event.usage);
         // 收到 [DONE] 后:usage 末 chunk 照常收账;deepseek-v4 还会在 [DONE] 之后补一条纯成本收尾
         // (choices 空的 {"choices":[],"cost":"0"})——无内容必须容忍,否则"快写完时整轮被误判
         // protocol 作废、内容全没"(2026-08-09 实锤)。只有 [DONE] 后又真的带 content/reasoning 才算异常。
@@ -216,23 +213,22 @@ export class OpenAIStreamBackend implements ModelBackend {
         if (typeof delta.content === 'string') await splitter.feed(delta.content);
         if (typeof choice?.finish_reason === 'string' && choice.finish_reason) finishReason = choice.finish_reason;
       };
-      while (true) { const { done, value } = await reader.read(); if (done) { naturalEof = true; break; } buffer += decoder.decode(value, { stream: true }); const lines = buffer.split('\n'); buffer = lines.pop() || ''; for (const line of lines) await consume(line); }
-      buffer += decoder.decode(); if (buffer) await consume(buffer); await splitter.flush(); await args.onEvent?.({ type: 'usage', usage });
+      await pumpSseLines(response.body, consume); await splitter.flush(); await args.onEvent?.({ type: 'usage', usage });
       if (args.signal?.aborted) return { ok: false, kind: 'aborted', usage };
       if (streamError || !gotDone) {
         // detail 优先级:[DONE] 前 EOF 是"流被打断",比 finish_reason 更本质,先报它。
         const detail = !gotDone ? 'eof without [DONE]' : (finishReason || 'missing accepted finish reason');
         return { ok: false, kind: 'protocol', detail, usage };
       }
-      if (finishReason === 'length') return { ok: false, kind: 'limit', detail: 'length', usage };
-      if (finishReason !== 'stop') return { ok: false, kind: 'protocol', detail: finishReason || 'missing accepted finish reason', usage };
+      if (isOpenAiTruncated(finishReason)) return { ok: false, kind: 'limit', detail: 'length', usage };
+      if (!isOpenAiOk(finishReason)) return { ok: false, kind: 'protocol', detail: finishReason || 'missing accepted finish reason', usage };
       if (!text) return { ok: false, kind: 'empty', usage };
       return { ok: true, terminal: 'clean', text, thinking, usage, stopReason: finishReason };
     } catch (error: any) {
       if (args.signal?.aborted) return { ok: false, kind: 'aborted', usage };
-      if (timedOut || error?.name === 'AbortError') return { ok: false, kind: 'timeout', usage };
+      if (scope.timedOut || error?.name === 'AbortError') return { ok: false, kind: 'timeout', usage };
       return { ok: false, kind: 'fetch', detail: String(error?.message || error), usage };
-    } finally { if (reader && !naturalEof) try { await reader.cancel(); } catch {} clearTimeout(timer); args.signal?.removeEventListener('abort', abort); }
+    } finally { scope.cleanup(); }
   }
 }
 
@@ -267,20 +263,16 @@ export class OpenAIResponsesBackend implements ModelBackend {
   async streamChat(args: StreamChatArgs): Promise<StreamChatResult> {
     const endpoint = responsesEndpoint(this.options.baseUrl, this.options.allowHttpLocalhost);
     if (!this.options.apiKey || !endpoint) return { ok: false, kind: 'config' };
-    const controller = new AbortController(); let timedOut = false; const abort = () => controller.abort();
-    args.signal?.addEventListener('abort', abort, { once: true }); if (args.signal?.aborted) controller.abort();
-    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, this.options.timeoutMs ?? 480_000);
+    const scope = createAbortScope(args, this.options.timeoutMs);
     let text = ''; let thinking = ''; const usage = ZERO_USAGE(); let streamError = false; let completed = false; let failedReason = '';
-    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null; let naturalEof = false;
     const splitter = createLiteralThinkingSplitter(args.model,
       async (chunk) => { if (!chunk) return; text += chunk; await args.onEvent?.({ type: 'text', text: chunk }); },
       async (chunk) => { if (!chunk) return; thinking += chunk; await args.onEvent?.({ type: 'thinking', text: chunk }); }, true);
     try {
-      const response = await (this.options.fetch || fetch)(endpoint, { method: 'POST', headers: { authorization: `Bearer ${this.options.apiKey}`, 'content-type': 'application/json' }, body: JSON.stringify(responsesParams(args, this.options)), signal: controller.signal });
+      const response = await (this.options.fetch || fetch)(endpoint, { method: 'POST', headers: { authorization: `Bearer ${this.options.apiKey}`, 'content-type': 'application/json' }, body: JSON.stringify(responsesParams(args, this.options)), signal: scope.controller.signal });
       if (!response.ok || !response.body) return { ok: false, kind: 'http', detail: String(response.status) };
-      reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
       const consume = async (line: string) => {
-        const trimmed = line.trim(); if (!trimmed.startsWith('data:')) return; const raw = trimmed.slice(5).trim(); if (!raw || raw === '[DONE]') return;
+        const raw = extractSseData(line); if (raw === null || isSseDone(raw)) return;
         let event: any; try { event = JSON.parse(raw); } catch { return; }
         if (event.error) { streamError = true; failedReason = String(event.error.message || event.error); return; }
         const t = String(event.type || '');
@@ -291,17 +283,13 @@ export class OpenAIResponsesBackend implements ModelBackend {
         } else if (t === 'response.output_text.done' && typeof event.text === 'string' && !text) {
           await splitter.feed(event.text);
         } else if (t === 'response.completed' || t === 'response.done') {
-          const u = event.response?.usage || event.usage || {};
-          usage.input = Number(u.input_tokens ?? u.prompt_tokens) || usage.input;
-          usage.output = Number(u.output_tokens ?? u.completion_tokens) || usage.output;
-          usage.cacheRead = Number(u.input_tokens_details?.cached_tokens ?? 0) || usage.cacheRead;
+          applyResponsesUsage(usage, event.response?.usage || event.usage || {});
           completed = true;
         } else if (t === 'response.failed' || t === 'error') {
           streamError = true; failedReason = String(event.error?.message || t);
         }
       };
-      while (true) { const { done, value } = await reader.read(); if (done) { naturalEof = true; break; } buffer += decoder.decode(value, { stream: true }); const lines = buffer.split('\n'); buffer = lines.pop() || ''; for (const line of lines) await consume(line); }
-      buffer += decoder.decode(); if (buffer) await consume(buffer); await splitter.flush(); await args.onEvent?.({ type: 'usage', usage });
+      await pumpSseLines(response.body, consume); await splitter.flush(); await args.onEvent?.({ type: 'usage', usage });
       if (args.signal?.aborted) return { ok: false, kind: 'aborted', usage };
       if (streamError) return { ok: false, kind: 'protocol', detail: failedReason || 'response failed', usage };
       if (!completed) return { ok: false, kind: 'protocol', detail: 'missing response.completed', usage };
@@ -309,9 +297,9 @@ export class OpenAIResponsesBackend implements ModelBackend {
       return { ok: true, terminal: 'clean', text, thinking, usage, stopReason: 'stop' };
     } catch (error: any) {
       if (args.signal?.aborted) return { ok: false, kind: 'aborted', usage };
-      if (timedOut || error?.name === 'AbortError') return { ok: false, kind: 'timeout', usage };
+      if (scope.timedOut || error?.name === 'AbortError') return { ok: false, kind: 'timeout', usage };
       return { ok: false, kind: 'fetch', detail: String(error?.message || error), usage };
-    } finally { if (reader && !naturalEof) try { await reader.cancel(); } catch {} clearTimeout(timer); args.signal?.removeEventListener('abort', abort); }
+    } finally { scope.cleanup(); }
   }
 }
 

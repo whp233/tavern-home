@@ -56,18 +56,21 @@ export default function TokenUsagePanel({ base, envOk }: { base: string; envOk: 
   const daily = data?.daily || [];
   const hourly = data?.hourly || [];
 
-  // 默认饼的日期：选最新一天
+  // 默认饼的日期：选最新一天（仅饼图按需时生效，折线默认不算饼）
   useEffect(() => {
+    if (trendMode !== 'pie') return;
     if (!pieDate && daily.length) setPieDate(daily[daily.length - 1].date);
-  }, [daily, pieDate]);
+  }, [daily, pieDate, trendMode]);
 
   const pieSource = useMemo(() => {
+    if (trendMode !== 'pie') return null;
     const d = daily.find((x) => x.date === pieDate) || daily[daily.length - 1];
     if (!d) return null;
     return d;
-  }, [daily, pieDate]);
+  }, [daily, pieDate, trendMode]);
 
   const pieData = useMemo(() => {
+    if (trendMode !== 'pie') return [];
     if (!pieSource) return [];
     const tot = pieSource.input + pieSource.output + pieSource.cacheRead + pieSource.cacheWrite;
     if (tot === 0) return [];
@@ -77,7 +80,7 @@ export default function TokenUsagePanel({ base, envOk }: { base: string; envOk: 
       { name: '写入', value: pieSource.cacheWrite, color: C.cacheWrite },
       { name: '命中', value: pieSource.cacheRead, color: C.cacheRead },
     ];
-  }, [pieSource]);
+  }, [pieSource, trendMode]);
 
   const lineData = useMemo(() => {
     if (range === 'today') {

@@ -347,10 +347,13 @@ function splitInlineThinking(content: string, streaming?: boolean): { thinking: 
   let m: RegExpExecArray | null;
   while ((m = re.exec(content))) thinking += (thinking ? '\n\n' : '') + m[1].trim();
   let body = content.replace(re, '');
-  if (streaming) {
+  // P2：流式期间不再把开头未闭合 <thinking> 提前搬进思考区，延迟到 settled 再处理
+  // 原 streaming=true 分支会导致流式正文被吞直到闭合标签落地，观感“卡住”；现仅在 settled 时
+  // 若正文仍以未闭合 <thinking> 开头且尚未提炼出任何完整 thinking，才搬一次（避免误吞正文中段字面标签）
+  if (!streaming) {
     const om = /^\s*<thinking>/i.exec(body);
-    if (om) {
-      thinking += (thinking ? '\n\n' : '') + body.slice(om[0].length).trim();
+    if (om && !thinking) {
+      thinking += body.slice(om[0].length).trim();
       body = '';
     }
   }
@@ -382,18 +385,12 @@ function loadBeautifyOverrides(windowId: string): Record<string, boolean> {
   return {};
 }
 
-// ── 剧本透视:紧凑等宽读出,给数据不给花哨排版 ──
+// ── 剧本透视:Tab 按需 Token|召回|分层，52vh 封顶，按需渲染节省首屏 ──
 function FloorReportView({ report }: { report: FloorReport | null | undefined }) {
   if (!report || Object.keys(report).length === 0) return null;
   const blocks = Array.isArray(report.blocks) ? report.blocks : [];
   const loreHits = Array.isArray(report.loreHits) ? report.loreHits : [];
   const recalled = Array.isArray(report.recalledChapters) ? report.recalledChapters : [];
-  // report 是从 D1/流式响应读回来的裸 JSON,TS 类型管不住它的运行时形状——
-  // 老楼层的报告里 score 可能是字符串、候选项可能是 null,裸 .toFixed 一调就把整棵渲染树打崩
-  // (透视是浮层,崩了等于这一楼直接白屏)。渲染前逐项归一化:形状不对的丢掉,分数不是有限数就显示「—」。
-  // ⚠️别用裸 Number():Number('')===0、Number(null)===0、Number(true)===1,全是"有限数",
-  // 于是空分数会显示成 0.000、缺字段的设置会显示成 0——那比不显示更糟,因为它是**看起来正常的
-  // 假数据**,你会拿它去调及格线。只认真数字,和"非空且真能解析成数"的字符串。
   const finiteNum = (v: unknown): number | null => {
     if (typeof v === 'number') return Number.isFinite(v) ? v : null;
     if (typeof v === 'string' && v.trim() !== '') {
@@ -404,7 +401,7 @@ function FloorReportView({ report }: { report: FloorReport | null | undefined })
   };
   const asObj = (v: unknown): Record<string, unknown> | null =>
     v !== null && typeof v === 'object' ? (v as Record<string, unknown>) : null;
-  const candidates = (Array.isArray(report.recallCandidates) ? (report.recallCandidates as unknown[]) : [])
+  const candidatesAll = (Array.isArray(report.recallCandidates) ? (report.recallCandidates as unknown[]) : [])
     .map(asObj)
     .filter((c): c is Record<string, unknown> => c !== null)
     .map((c) => ({
@@ -413,6 +410,8 @@ function FloorReportView({ report }: { report: FloorReport | null | undefined })
       passed: c.passed === true,
       reason: typeof c.reason === 'string' ? c.reason : '',
     }));
+  const passedCandidates = candidatesAll.filter((c) => c.passed);
+  const filteredCandidates = candidatesAll.filter((c) => !c.passed);
   const rsObj = asObj(report.recallSettings);
   const rsTopK = rsObj ? finiteNum(rsObj.topK) : null;
   const rsMin = rsObj ? finiteNum(rsObj.minScore) : null;
@@ -421,31 +420,112 @@ function FloorReportView({ report }: { report: FloorReport | null | undefined })
     ? { topK: rsTopK, minScore: rsMin, maxChapters: rsMax }
     : null;
   const recent = Array.isArray(report.recentChapters) ? report.recentChapters : [];
-  const layers = report.layers && typeof report.layers === 'object' ? report.layers : {};
-  const standardSlots = report.standardSlots && typeof report.standardSlots === 'object' ? report.standardSlots : {};
-  const slotLabels: Record<string, string> = {
-    worldInfoBefore: '前置世界书', charDescription: '角色描述',
-    charPersonality: '角色性格', scenario: '场景', worldInfoAfter: '后置世界书',
-    chatExamples: '示例对话', chatHistory: '聊天历史', personaDescription: '人设',
+  const layers = report.layers && typeof report.layers === 'object' ? report.layers : {} as Record<string, number>;
+  const standardSlots = report.standardSlots && typeof report.standardSlots === 'object' ? report.standardSlots as Record<string, number> : {} as Record<string, number>;
+  // 7→3 类归一：worldInfo/charCard/personaDescription/chatHistory（后端已归一，此处兼容旧报告的 7 键回退）
+  const slotLabelsNew: Record<string, string> = {
+    worldInfo: '世界书', charCard: '角色卡', personaDescription: '人设', chatHistory: '聊天历史',
+    worldInfoBefore: '世界书', worldInfoAfter: '世界书', charDescription: '角色卡', charPersonality: '角色卡', scenario: '角色卡', chatExamples: '角色卡',
   };
+  const normalizedSlots: Record<string, number> = {};
+  for (const [k, v] of Object.entries(standardSlots)) {
+    const alias = slotLabelsNew[k] ? (k === 'worldInfoBefore' || k === 'worldInfoAfter' ? 'worldInfo' : k === 'charDescription' || k === 'charPersonality' || k === 'scenario' || k === 'chatExamples' ? 'charCard' : k) : k;
+    // 已是新 3 类键则直接累加，旧 7 键按映射归一
+    const nk = alias === 'worldInfoBefore' || alias === 'worldInfoAfter' ? 'worldInfo' : alias === 'charDescription' || alias === 'charPersonality' || alias === 'scenario' || alias === 'chatExamples' ? 'charCard' : alias;
+    const key = (['worldInfo', 'charCard', 'personaDescription', 'chatHistory'].includes(nk) ? nk : k);
+    normalizedSlots[key] = (normalizedSlots[key] || 0) + (typeof v === 'number' ? v : 0);
+  }
+  const slotDisplay = Object.entries(normalizedSlots)
+    .map(([k, v]) => `${slotLabelsNew[k] || k}:~${v}`)
+    .join(' / ');
+  // layers 超预算标截断：STREAM_BUDGET 2800 为口径，单层超 1200 或 totalEst 超预算即标
+  const BUDGET = 2800;
+  const totalEstNum = typeof report.totalEst === 'number' ? report.totalEst : null;
+  const [tab, setTab] = useState<'tokens' | 'recall' | 'layers'>('tokens');
+  const [showFiltered, setShowFiltered] = useState(false);
+  const tabBtn = (key: typeof tab, label: string) => (
+    <button
+      key={key}
+      onClick={() => setTab(key)}
+      className="serc text-[11px] px-2.5 py-1 rounded-full border"
+      style={{
+        borderColor: tab === key ? 'var(--accent)' : 'var(--dash-line)',
+        background: tab === key ? 'var(--accent)' : 'transparent',
+        color: tab === key ? '#fff' : 'var(--ink2)',
+      }}
+    >
+      {label}
+    </button>
+  );
   return (
-    <div className="mt-1.5 max-w-[85%] max-[760px]:max-w-[92%] border border-dashed border-dash-line rounded-xl bg-card/80 px-4 py-3 font-mono text-[11px] leading-relaxed text-ink-body break-all whitespace-pre-wrap">
+    <div
+      className="mt-1.5 max-w-[85%] max-[760px]:max-w-[92%] border border-dashed border-dash-line rounded-xl bg-card/80 px-4 py-3 font-mono text-[11px] leading-relaxed text-ink-body break-all whitespace-pre-wrap overflow-y-auto"
+      style={{ maxHeight: '52vh' }}
+    >
       {report.stateBoardStale && <div style={{ color: '#c2693f', marginBottom: 6 }}>这楼的状态板没解析出来,沿用旧板</div>}
-      {typeof report.totalEst === 'number' && <div className="serc" style={{ fontSize: 13, color: 'var(--ink-deep)', marginBottom: 6 }}>本次发送估算约 {report.totalEst} tokens</div>}
-      <div>积木({blocks.length}): {blocks.length ? blocks.map((b) => `${b.name || b.identifier}(~${b.tokensEst})`).join(', ') : '—'}</div>
-      <div style={{ marginTop: 4 }}>世界书命中: {loreHits.length ? loreHits.join('、') : '—'}</div>
-      <div style={{ marginTop: 4 }}>召回老章: {recalled.length ? recalled.join('、') : '—'}</div>
-      {candidates.length > 0 && (
-        <div style={{ marginTop: 4 }}>
-          候选相关度{recallSettings ? `(及格线 ${recallSettings.minScore} / 上限 ${recallSettings.maxChapters} 篇 / 候选池 ${recallSettings.topK})` : ''}:{' '}
-          {candidates.map((c) => `${c.chapterNo} ${c.score === null ? '—' : c.score.toFixed(3)}${c.passed ? '✓' : `✗${c.reason}`}`).join(' / ')}
+      {totalEstNum !== null && <div className="serc" style={{ fontSize: 13, color: 'var(--ink-deep)', marginBottom: 8 }}>本次发送估算约 {totalEstNum} tokens{totalEstNum > BUDGET ? ' · 超预算已截断' : ''}</div>}
+      <div className="flex items-center gap-2 mb-3">
+        {tabBtn('tokens', 'Token')}
+        {tabBtn('recall', '召回')}
+        {tabBtn('layers', '分层')}
+      </div>
+      {tab === 'tokens' && (
+        <div className="space-y-2">
+          {blocks.length > 0 && <div>积木({blocks.length}): {blocks.map((b) => `${b.name || b.identifier}(~${b.tokensEst})`).join(', ')}</div>}
+          {slotDisplay ? <div>标准槽: {slotDisplay}</div> : null}
+          {!blocks.length && !slotDisplay && <div className="text-ink2">无 Token 明细</div>}
         </div>
       )}
-      <div style={{ marginTop: 4 }}>近期章: {recent.length ? recent.join('、') : '—'}</div>
-      <div style={{ marginTop: 4 }}>
-        分层估算: {Object.keys(layers).length ? Object.entries(layers).map(([k, v]) => `${k}:${v}`).join(' / ') : '—'}
-      </div>
-      <div style={{ marginTop: 4 }}>标准槽: {Object.keys(standardSlots).length ? Object.entries(standardSlots).map(([k, v]) => `${slotLabels[k] || k}:~${v}`).join(' / ') : '—'}</div>
+      {tab === 'recall' && (
+        <div className="space-y-2">
+          {loreHits.length > 0 && <div>世界书命中: {loreHits.join('、')}</div>}
+          {recalled.length > 0 && <div>召回老章: {recalled.join('、')}</div>}
+          {recent.length > 0 && <div>近期章: {recent.join('、')}</div>}
+          {candidatesAll.length > 0 ? (
+            <div>
+              <div>
+                候选相关度{recallSettings ? `(及格线 ${recallSettings.minScore} / 上限 ${recallSettings.maxChapters} 篇 / 候选池 ${recallSettings.topK})` : ''}:{' '}
+                {passedCandidates.length ? passedCandidates.map((c) => `${c.chapterNo} ${c.score === null ? '—' : c.score.toFixed(3)}✓`).join(' / ') : '—'}
+              </div>
+              {filteredCandidates.length > 0 && (
+                <div className="mt-1">
+                  <button onClick={() => setShowFiltered((v) => !v)} className="serc text-[11px] text-ink2 hover:text-accent underline underline-offset-2">
+                    {showFiltered ? '收起' : `已过滤 ${filteredCandidates.length} 条`} {showFiltered ? '▲' : '▼'}
+                  </button>
+                  {showFiltered && (
+                    <div className="mt-1 text-ink2">
+                      {filteredCandidates.map((c) => `${c.chapterNo} ${c.score === null ? '—' : c.score.toFixed(3)}✗${c.reason}`).join(' / ')}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="text-ink2">无召回候选</div>
+          )}
+          {!loreHits.length && !recalled.length && !recent.length && !candidatesAll.length && <div className="text-ink2">无召回数据</div>}
+        </div>
+      )}
+      {tab === 'layers' && (
+        <div className="space-y-2">
+          {Object.keys(layers).length ? (
+            <div>
+              {Object.entries(layers).map(([k, v]) => {
+                const num = typeof v === 'number' ? v : 0;
+                const truncated = num > 1200 || (totalEstNum !== null && totalEstNum > BUDGET && (k === 'floors' || k === 'tail'));
+                return (
+                  <span key={k} className="inline-block mr-3">
+                    {k}:{num}{truncated ? '·截断' : ''}
+                  </span>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="text-ink2">无分层估算</div>
+          )}
+          {Object.keys(normalizedSlots).length > 0 && <div className="text-ink2">槽位: {slotDisplay}</div>}
+        </div>
+      )}
     </div>
   );
 }
@@ -1365,6 +1445,9 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
   }
   // 每楼「素颜/美化」的用户手动覆盖值(未覆盖的楼层按 matched-for-this-floor 现算默认值)
   const [beautifyOverrides, setBeautifyOverrides] = useState<Record<string, boolean>>({});
+  // P2：预演缓存——仅首次/手动切换时算 defaultBeautify，素颜跳过 foldPlainSegment
+  // key=floorKey, value 含 content 指纹与全部预演结果，避免每帧对每楼 unwrap→down→split→fold 三遍重算
+  const beautifyCacheRef = useRef<Map<string, { contentKey: string; unwrapped: string; unwrapMatched: boolean; regexed: string; downMatched: boolean; beautifySplit: { thinking: string; body: string } | null; foldedParts: FoldPart[] | null; foldMatched: boolean; defaultBeautify: boolean }>>(new Map());
   function toggleBeautify(floorKey: string, defaultVal: boolean) {
     if (!curWindowId) return;
     const windowId = curWindowId;
@@ -3827,41 +3910,61 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
               // 正则=十有八九匹配不上/匹配错,折出来的卡片是残的,不如老实显示"在写…"。渲染管线
               // 绝不改写 f.content 本身(展示层变换,楼层落库内容永远原样)。
               const isSettled = !!f.id && !f.streaming;
-              // 任务1(老楼层剥壳):在下行正则/兜底折叠之前先剥掉 <content> 包裹壳(镜像后端
-              // unwrapContentTag,理由见 deskRender.ts unwrapContentTagClient 头注释)——补丁上线前
-              // 落库的老楼层正文整段裹在 <content>...</content> 里,不剥的话 foldProtocolBlocks 会把
-              // 整篇小说正文当一个巨大协议块折起来。这一步只影响"美化"这条展示链路,素颜(见下面
-              // displayText/最终 splitInlineThinking 调用)照旧显示 f.content 原文,不受这层剥壳影响
-              // ——素颜本来就是用来核对"美化有没有把东西折坏"的原文视角。
-              const unwrappedContent = isSettled ? unwrapContentTagClient(f.content) : f.content;
-              const unwrapMatched = isSettled && unwrappedContent !== f.content;
-              const regexedContent = isSettled ? downTransform(f, unwrappedContent) : f.content;
-              const downMatched = isSettled && regexedContent !== unwrappedContent;
-              // 兜底折叠(任务1)预演:美化视角(用 regexedContent、剥掉规范 <thinking> 后)先算一遍
-              // 有没有漏网协议块——哪怕这楼没有一条自定义正则命中,只要还有协议渣,也该 default 美化,
-              // 不然"模型发明新标签名"这个任务本要治的病,default 素颜下永远看不见。跟下面 beautify=true
-              // 分支要显示的 body 是同一份计算,这里先求出来复用,不重复跑 splitInlineThinking/fold。
-              const beautifySplit = isSettled ? splitInlineThinking(regexedContent, false) : null;
-              const foldedParts = beautifySplit ? foldTransform(f, beautifySplit.body) : null;
-              const foldMatched = !!foldedParts && foldedParts.some((p) => p.type === 'fold');
-              // defaultBeautify 现在也认 unwrapMatched(任务1):老楼层剥完壳之后,里头往往已经没有
-              // 别的协议渣了(foldMatched 会是 false)、也没配自定义的下行正则(downMatched 也是
-              // false)——如果这时还只看 downMatched||foldMatched,default 会判回素颜,而素颜显示的
-              // 是未剥壳的 f.content 原文,<content> 标签字面文本又会露出来,治了个寂寞。把"剥壳本身
-              // 改动了展示内容"也算进"这楼该不该默认美化"的判断里,default 才会切到美化视角
-              // (displayText=regexedContent,已经是剥完壳的版本),不用手动点"美化"才看见干净正文。
-              const defaultBeautify = downMatched || foldMatched || unwrapMatched; // 工单原话:default 美化 when any down-rule matched(含兜底折叠命中+剥壳命中)
-              const beautify = f.key in beautifyOverrides ? beautifyOverrides[f.key] : defaultBeautify;
+              // P2：预演缓存——仅首次/内容或规则版本变化时跑全套 unwrap→down→split→fold，素颜跳过 foldPlainSegment
+              const hasOverride = f.key in beautifyOverrides;
+              const cached = beautifyCacheRef.current.get(f.key);
+              const contentKey = `${f.content}__v${downRulesVerRef.current}__s${isSettled ? 1 : 0}`;
+              let unwrappedContent: string;
+              let unwrapMatched: boolean;
+              let regexedContent: string;
+              let downMatched: boolean;
+              let beautifySplit: { thinking: string; body: string } | null;
+              let foldedParts: FoldPart[] | null;
+              let foldMatched: boolean;
+              let defaultBeautify: boolean;
+              const needRecompute = !cached || cached.contentKey !== contentKey;
+              if (needRecompute) {
+                unwrappedContent = isSettled ? unwrapContentTagClient(f.content) : f.content;
+                unwrapMatched = isSettled && unwrappedContent !== f.content;
+                regexedContent = isSettled ? downTransform(f, unwrappedContent) : f.content;
+                downMatched = isSettled && regexedContent !== unwrappedContent;
+                beautifySplit = isSettled ? splitInlineThinking(regexedContent, false) : null;
+                foldedParts = beautifySplit ? foldTransform(f, beautifySplit.body) : null;
+                foldMatched = !!foldedParts && foldedParts.some((p) => p.type === 'fold');
+                defaultBeautify = downMatched || foldMatched || unwrapMatched;
+                beautifyCacheRef.current.set(f.key, {
+                  contentKey,
+                  unwrapped: unwrappedContent,
+                  unwrapMatched,
+                  regexed: regexedContent,
+                  downMatched,
+                  beautifySplit,
+                  foldedParts,
+                  foldMatched,
+                  defaultBeautify,
+                });
+              } else {
+                unwrappedContent = cached.unwrapped;
+                unwrapMatched = cached.unwrapMatched;
+                regexedContent = cached.regexed;
+                downMatched = cached.downMatched;
+                beautifySplit = cached.beautifySplit;
+                foldedParts = cached.foldedParts;
+                foldMatched = cached.foldMatched;
+                defaultBeautify = cached.defaultBeautify;
+              }
+              const beautify = hasOverride ? beautifyOverrides[f.key] : defaultBeautify;
               const displayText = isSettled && beautify ? regexedContent : f.content;
 
               const useBeautifiedSplit = isSettled && beautify && !!beautifySplit;
-              const { thinking: inlineThinking, body } = useBeautifiedSplit ? beautifySplit! : splitInlineThinking(displayText, !!f.streaming);
+              const { thinking: inlineThinking, body } = useBeautifiedSplit ? beautifySplit! : splitInlineThinking(displayText, false);
               const thinkingText = [f.thinking, inlineThinking].filter((s) => s && s.trim()).join('\n\n---\n\n');
               const isLast = f.key === lastAssistantKey;
               // 只有真的在美化态时才拆```html卡片/折协议渣——素颜/未落库楼层原样当纯文本显示(哪怕
               // 字面上带着```html围栏或协议残渣标签,那也是模型的原始输出,素颜就该照原样显示;
               // 折叠归在美化侧,理由见 deskRender.ts foldProtocolBlocks 头注释同一条判断)。fold 结果里
               // 的 text 分段还要再过一遍 segmentRendered 拆```html卡片,fold 分段原样透传不递归处理。
+              // P2：素颜时已跳过 foldPlainSegment，segments 仅为纯文本，避免每楼每帧三遍重算
               const segments: RenderSegment[] = useBeautifiedSplit && foldedParts
                 ? foldedParts.flatMap((p) => (p.type === 'fold' ? [p] : segmentRendered(p.text)))
                 : [{ type: 'text' as const, text: body }];

@@ -17,5 +17,14 @@
     "@cloudflare/workers-types": "5.20260731.1",
     "typescript": "^5.8.3",
     "wrangler": "^4.26.1"
+  },
+  "dependencies": {
+    "esbuild": "^0.28.2"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "esbuild@0.28.1": true,
+    "@esbuild/win32-x64@0.28.2": true,
+    "@esbuild/win32-x64@0.28.1": true
   }
 }
