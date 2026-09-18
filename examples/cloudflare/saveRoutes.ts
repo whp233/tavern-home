@@ -24,6 +24,7 @@ import { D1StudyStorage } from './adapters/d1StudyStorage.ts';
 import { D1CgStorage } from './adapters/d1CgStorage.ts';
 import { D1StickyNotesStorage } from './adapters/d1StickyNotesStorage.ts';
 import { D1DailyLoginStore } from './adapters/d1DailyLoginStore.ts';
+import { safeJsonParse } from '../../src/shared/json.ts';
 
 interface SaveEnv {
   OC_DB: D1Database;
@@ -34,11 +35,6 @@ const JSON_LIMIT = 10 * 1024 * 1024;
 
 function genId(prefix: string): string {
   return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 9);
-}
-
-function safeJsonParse(raw: unknown, fallback: unknown): unknown {
-  if (raw == null) return fallback;
-  try { return JSON.parse(String(raw)); } catch { return fallback; }
 }
 
 function jsonResponse(request: Request, env: SaveEnv, body: unknown, status = 200): Response {

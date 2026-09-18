@@ -28,6 +28,8 @@ import { isTextOnlyModel, type DeskImageAttachment, type StreamChatResult } from
 import { validateDeskChannelConfig } from '../core/deskChannelConfig.ts';
 import { buildChatAppendix, parseRefBookIds } from '../tools/chapterMemory.ts';
 import { renderDiaryIndexText, buildOpeningContext, isFirstTurn } from '../core/contextInjector.ts';
+import { genId } from '../shared/ids.ts';
+import { safeJsonStringify } from '../shared/json.ts';
 
 interface DeskChatEnv {
   OC_DB: D1Database;
@@ -169,10 +171,6 @@ function errJson(msg: string, status = 400): Response {
     status,
     headers: { 'Content-Type': 'application/json; charset=utf-8', ...CORS },
   });
-}
-
-function genId(prefix: string): string {
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
 }
 
 // ===== 状态板 in-band 解析 =====

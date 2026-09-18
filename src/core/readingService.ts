@@ -1,27 +1,11 @@
 import type { ReadingStorage } from './storage.ts';
 import type { CommentAuthor } from './types.ts';
+import { naturalCompare } from '../shared/naturalCompare.ts';
 
 const MAX_CHAPTERS = 30;
 const MAX_COMMENTS = 100;
 const MAX_COMMENT_CHARS = 2000;
 const MAX_READ_CHARS = 30000;
-
-function naturalCompare(left: string, right: string): number {
-  const segments = (value: string) => value.match(/\d+|\D+/g) || [];
-  const a = segments(left);
-  const b = segments(right);
-  for (let index = 0; index < Math.max(a.length, b.length); index++) {
-    if (a[index] === undefined) return -1;
-    if (b[index] === undefined) return 1;
-    const aNumber = /^\d+$/.test(a[index]);
-    const bNumber = /^\d+$/.test(b[index]);
-    if (aNumber && bNumber) {
-      const difference = Number(a[index]) - Number(b[index]);
-      if (difference) return difference;
-    } else if (a[index] !== b[index]) return a[index] < b[index] ? -1 : 1;
-  }
-  return 0;
-}
 
 function limit(value: unknown, fallback: number, maximum: number): number {
   return typeof value === 'number' && Number.isInteger(value)

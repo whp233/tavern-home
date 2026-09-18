@@ -79,3 +79,15 @@ export function scrubLoneSurrogates(s: string): string {
   }
   return out;
 }
+
+// —— 项目名归一化（2026-09-18 精简批次合入）——
+// 原先 core/studyService.ts 与 tools/study.ts 各有一份，函数体逐字相同，只是常量名不同
+// （INVISIBLE_PROJECT_CHARS / PROJECT_STRIP_RE，两者的 RegExp 字面量完全一致）。
+// 剔除项目名里混入的零宽字符（零宽空格/左右标记/词连接符/BOM）再 trim——这些字符是从网页或
+// 聊天里粘贴项目名时带进来的，肉眼不可见却会让「同一个项目」判成两个，导致书架分组裂开。
+const INVISIBLE_PROJECT_CHARS = new RegExp(
+  '[' + String.fromCharCode(0x200B, 0x200E, 0x200F, 0x2060, 0xFEFF) + ']', 'g');
+
+export function normalizeProject(value: string): string {
+  return value.replace(INVISIBLE_PROJECT_CHARS, '').trim();
+}

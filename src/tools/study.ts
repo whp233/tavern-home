@@ -14,6 +14,8 @@
 
 import { embedText, upsertVector, queryVectors, deleteVector } from '../storage/vectorize.ts';
 import type { Ai, VectorizeIndex } from '../storage/vectorize.ts';
+import { normalizeProject } from '../shared/text.ts';
+export { normalizeProject };
 
 interface StudyEnv {
   OC_DB: D1Database;
@@ -122,11 +124,6 @@ function makePreview(content: any, max: number = 200): string {
 // 守门判空、写入、精确筛选(list/search)三处必须共用同一个 canonical 值——否则 " 项目1 " 和 "项目1"
 // project 必须保持原值，避免写入与精确筛选使用不同规范化结果。
 // ⚠️源码刻意不写 \u 十六进制转义(Edit 工具 hex 转义会落成真实控制字节的老坑),用 fromCharCode 拼字符集。
-const PROJECT_STRIP_RE = new RegExp('[' + String.fromCharCode(0x200B, 0x200E, 0x200F, 0x2060, 0xFEFF) + ']', 'g');
-export function normalizeProject(raw: string): string {
-  return raw.replace(PROJECT_STRIP_RE, '').trim();
-}
-
 // ===== 输入校验:create 全字段 / update 只校验给出的字段(调用方按需传子集)=====
 function validateFields(body: any, opts: { requireCategory: boolean; requireProject?: boolean }): string | null {
   if (opts.requireCategory || body.category !== undefined) {

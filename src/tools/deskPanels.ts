@@ -12,6 +12,8 @@
 // 召回参数的解析/夹取只此一份,住在装配引擎那边(它是真正用这三个数的人),这里 import 过来复用
 // ——两处各写一套夹取范围,迟早出现"前端存进去了、装配时又被夹掉"这种最难查的不生效。
 import { parseRecallSettings, RECALL_DEFAULTS, LORE_CATEGORIES, LORE_CATEGORY_SQL } from '../chat/deskAssemble.ts';
+import { genId } from '../shared/ids.ts'
+import { safeJsonParse } from '../shared/json.ts';
 
 interface DeskPanelsEnv {
   OC_DB: D1Database;
@@ -34,15 +36,6 @@ function normalizeLoreFields(value: any): Record<string, string> {
   const out: Record<string, string> = {};
   for (const key of LORE_FIELD_KEYS) if (typeof value?.[key] === 'string' && value[key]) out[key] = value[key];
   return out;
-}
-
-function genId(prefix: string): string {
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
-}
-
-function safeJsonParse(raw: any, fallback: any): any {
-  if (raw === undefined || raw === null) return fallback;
-  try { return JSON.parse(raw); } catch { return fallback; }
 }
 
 // ===== A1: GET /api/oc/desk/presets/:id/blocks?full=1 =====

@@ -3,31 +3,12 @@
 // 跟 desk.ts(S1 导入器+预设/正则列表)分文件放,是因为这俩是两类活——desk.ts 管"包怎么进来",
 // 这里管"部署者怎么拿包缝配方"——文件各自单一职责,別因为都姓 desk 就硬凑一个大文件。
 //
-// id 生成/JSON兜底照抄 desk.ts 头注释那套家法(每文件各自小份复制,不是漏抽公共util,是本仓一贯风格)。
+
+import { genId } from '../shared/ids.ts';
+import { safeJsonParse, safeJsonStringify } from '../shared/json.ts';
 
 interface DeskRecipesEnv {
   OC_DB: D1Database;
-}
-
-function genId(prefix: string): string {
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
-}
-
-function safeJsonStringify(v: any): string {
-  try {
-    return JSON.stringify(v ?? {});
-  } catch {
-    return '{}';
-  }
-}
-
-function safeJsonParse(raw: any, fallback: any): any {
-  if (raw === undefined || raw === null) return fallback;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return fallback;
-  }
 }
 
 function joinRegexLiteral(find: string, flags: string): string {

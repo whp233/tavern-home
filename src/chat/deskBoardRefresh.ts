@@ -20,6 +20,7 @@
 import { makeD1UsageSink } from '../storage/usageSink.ts';
 import { completeText, type CompleteTextUsage } from './modelBackend.ts';
 import { parseStateBoard } from './desk.ts';
+import { safeJsonParse } from '../shared/json.ts';
 
 interface DeskBoardRefreshEnv {
   OC_DB: D1Database;
@@ -55,11 +56,6 @@ const REFRESH_SYS =
 输出规范：
 使用 \`\`\`stateboard 围栏包裹JSON内容。围栏必须处于文本末尾，围栏前后不允许添加任何解释、额外文字。`;
 
-function safeJsonParse<T>(raw: string | null | undefined, fallback: T): T {
-  if (!raw) return fallback;
-  try { return JSON.parse(raw); } catch { return fallback; }
-}
-
 export async function deskBoardRefresh(env: DeskBoardRefreshEnv, windowId: string): Promise<any> {
   if (!windowId) return { success: false, error: '缺 window_id' };
   const usageSink = makeD1UsageSink(env);
@@ -90,7 +86,7 @@ export async function deskBoardRefresh(env: DeskBoardRefreshEnv, windowId: strin
   const content = String(floor.content || '').trim();
   if (!content) return { success: false, error: '最后一楼是空的,没有正文可以据此更新' };
 
-  const board = safeJsonParse<Record<string, any>>(win.state_board, {});
+  const board = safeJsonParse(win.state_board, {});
   if (!board || typeof board !== 'object' || Array.isArray(board)) {
     return { success: false, error: '当前状态板不是一个对象,先去状态板面板把它修好再刷新' };
   }

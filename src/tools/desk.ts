@@ -23,6 +23,8 @@ import { embedMemory } from './study.ts';
 import type { CharacterCard } from '../core/characterCard.ts';
 import { parseChatJsonl, mergeFloors } from '../core/chatImport.ts';
 import { deskWindowCreate } from './deskWindows.ts';
+import { genId } from '../shared/ids.ts';
+import { safeJsonStringify } from '../shared/json.ts';
 
 interface DeskEnv {
   OC_DB: D1Database;
@@ -31,18 +33,6 @@ interface DeskEnv {
 }
 
 const POISON_KEY_RE = /key|token|secret|password|credential/i;
-
-function genId(prefix: string): string {
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
-}
-
-function safeJsonStringify(v: any): string {
-  try {
-    return JSON.stringify(v ?? {});
-  } catch {
-    return '{}';
-  }
-}
 
 // 导入器 400 必须指出具体字段与实际类型。
 // 只给已经存在的硬校验失败换措辞用的小料,不新增校验闸(工单原话:只改报错文案质量,不放宽任何

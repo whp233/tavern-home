@@ -9,23 +9,12 @@
 import { invalidateDeskTimelineIfFolded, fenceDeskTimelineAfterWrite, SEED_TIMELINE_STATE, updateDeskTimelineTexts } from '../chat/deskTimeline.ts';
 import { scrubLoneSurrogates } from '../shared/text.ts';
 import { STATEBOARD_MAX_BYTES } from '../core/stateBoard.ts'; // 手改与机器写入共享同一字节上限(核心纯函数模块,不经 chat/desk.ts 转手)
+import { genId } from '../shared/ids.ts'
+import { safeJsonParse, safeJsonStringify } from '../shared/json.ts';
 
 interface DeskWindowsEnv {
   OC_DB: D1Database;
   [k: string]: any;
-}
-
-function genId(prefix: string): string {
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
-}
-
-function safeJsonStringify(v: any): string {
-  try { return JSON.stringify(v ?? {}); } catch { return '{}'; }
-}
-
-function safeJsonParse(raw: any, fallback: any): any {
-  if (raw === undefined || raw === null) return fallback;
-  try { return JSON.parse(raw); } catch { return fallback; }
 }
 
 // 状态板/vars 的形状闸:只收纯对象(拒数组/拒基本类型)——同 chat/desk.ts parseStateBoard 的

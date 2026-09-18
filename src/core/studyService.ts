@@ -1,27 +1,10 @@
 import type { SemanticSearchAdapter, StudyListQuery, StudyStorage } from './storage.ts';
 import type { LoreConfig, StudyCategory, StudyEntry } from './types.ts';
+import { naturalCompare } from '../shared/naturalCompare.ts';
+import { normalizeProject } from '../shared/text.ts';
+export { normalizeProject };
 
 const CATEGORIES = new Set<StudyCategory>(['world', 'plot', 'outline', 'session']);
-const INVISIBLE_PROJECT_CHARS = new RegExp('[' + String.fromCharCode(0x200B, 0x200E, 0x200F, 0x2060, 0xFEFF) + ']', 'g');
-
-export function normalizeProject(value: string): string {
-  return value.replace(INVISIBLE_PROJECT_CHARS, '').trim();
-}
-
-function naturalCompare(left: string, right: string): number {
-  const split = (value: string) => value.match(/\d+|\D+/g) || [];
-  const a = split(left);
-  const b = split(right);
-  for (let index = 0; index < Math.max(a.length, b.length); index++) {
-    if (a[index] === undefined) return -1;
-    if (b[index] === undefined) return 1;
-    if (/^\d+$/.test(a[index]) && /^\d+$/.test(b[index])) {
-      const difference = Number(a[index]) - Number(b[index]);
-      if (difference) return difference;
-    } else if (a[index] !== b[index]) return a[index] < b[index] ? -1 : 1;
-  }
-  return 0;
-}
 
 function validate(input: any, creating: boolean): string | null {
   if (creating || input.category !== undefined) {

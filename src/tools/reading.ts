@@ -20,6 +20,7 @@ import { deleteVector } from '../storage/vectorize.ts';
 import type { Ai, VectorizeIndex } from '../storage/vectorize.ts';
 import { embedChapterSummary } from './desk.ts';
 import { normalizeProject } from './study.ts';
+import { naturalCompare } from '../shared/naturalCompare.ts';
 
 interface ReadingEnv {
   OC_DB: D1Database;
@@ -66,26 +67,6 @@ function clamp(n: any, fallback: number, min: number, max: number): number {
 // 换行拍平 + 截断成预览(章节列表用,绝不带全文)
 function makePreview(content: any, max: number): string {
   return String(content || '').replace(/[\r\n]+/g, ' ').slice(0, max);
-}
-
-// 章节号自然排序(照 study.ts 里的手搓比较器思路抄的:workerd 的 ICU 裁剪版对 localeCompare 的 numeric
-// 选项不可靠,手搓"数字段按数值比、文字段按码位比"的比较器,行为在哪个运行时都一样)
-function naturalCompare(x: string, y: string): number {
-  const seg = (s: string) => s.match(/\d+|\D+/g) || [];
-  const xs = seg(x), ys = seg(y);
-  for (let i = 0; i < Math.max(xs.length, ys.length); i++) {
-    const a = xs[i], b = ys[i];
-    if (a === undefined) return -1;
-    if (b === undefined) return 1;
-    const an = /^\d+$/.test(a), bn = /^\d+$/.test(b);
-    if (an && bn) {
-      const d = Number(a) - Number(b);
-      if (d !== 0) return d;
-    } else if (a !== b) {
-      return a < b ? -1 : 1;
-    }
-  }
-  return 0;
 }
 
 // ===== 输入校验(照 study.ts validateFields 集中一处的风格;update 只校验给出的字段)=====
