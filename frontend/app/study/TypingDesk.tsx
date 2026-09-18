@@ -14,6 +14,7 @@
 // 默认极简原则:开新窗=选project(当前项目tab)→选配方→(可选)标题→开窗,三步零仪式感;
 // 积木/世界书/正则这些"抽屉"通通走独立的抽屉面板,不在主流程里。
 
+import { glassCard } from './sharedUi';
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, forwardRef, useImperativeHandle } from 'react';
 import DeskDrawerHub, { type DeskDrawerHandle, type DeskDrawerTabKey } from './DeskDrawers';
 import LoreWindow from './LoreWindow';
@@ -191,9 +192,6 @@ function genBoardRowId(): string {
 // ── Sage 风格小料(照 page.tsx 同款数值抄一份——列表屏用这套;写作屏是编辑部同款 Tailwind 全屏聊天皮,两种视觉语言各管各的屏) ──
 const cardStyle: React.CSSProperties = {
   background: 'var(--card-bg)', border: '1px solid var(--line-soft)', borderRadius: 22, boxShadow: '0 6px 18px var(--card-shadow)',
-};
-const glassCardStyle: React.CSSProperties = {
-  background: 'var(--glass-bg)', border: '1.5px dashed var(--dash-line)', borderRadius: 22, boxShadow: '0 4px 16px var(--card-shadow)',
 };
 const pillStyle: React.CSSProperties = {
   display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 14, color: 'var(--ink2)',
@@ -4785,7 +4783,7 @@ const TypingDesk = forwardRef<TypingDeskHandle, { base: string; envOk: boolean; 
         ) : winListError ? (
           <div className="card" style={{ ...cardStyle, padding: '20px 24px', fontSize: 13, color: '#c2693f' }}>翻不开：{winListError}</div>
         ) : windows.length === 0 ? (
-          <div className="card" style={{ ...glassCardStyle, padding: '20px 24px', fontSize: 13, color: 'var(--ink2)' }}>这个项目还没开过窗~点右上角开第一扇</div>
+          <div className="card" style={{ ...glassCard, padding: '20px 24px', fontSize: 13, color: 'var(--ink2)' }}>这个项目还没开过窗~点右上角开第一扇</div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
             {windows.map((w) => (

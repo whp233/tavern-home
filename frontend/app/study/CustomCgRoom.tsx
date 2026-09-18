@@ -4,6 +4,7 @@
 // 并按模拟 state 展示「已解锁 / 未解锁」状态。对接 /api/oc/cg/*。
 // fetch 一律 try/catch，res.ok 和 body.success 都要验（书房家法）。
 
+import { glassCard, makeDeskApi } from './sharedUi';
 import { useState, useEffect, useCallback } from 'react';
 
 type CgRow = {
@@ -42,12 +43,6 @@ const cardStyle: React.CSSProperties = {
   border: '1px solid var(--line-soft)',
   borderRadius: 22,
   boxShadow: '0 6px 18px var(--card-shadow)',
-};
-const glassStyle: React.CSSProperties = {
-  background: 'var(--glass-bg)',
-  border: '1.5px dashed var(--dash-line)',
-  borderRadius: 22,
-  boxShadow: '0 4px 16px var(--card-shadow)',
 };
 const pillStyle: React.CSSProperties = {
   display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 14, color: 'var(--ink2)',
@@ -90,14 +85,7 @@ export default function CustomCgRoom({ base, envOk, onGoBack }: { base: string; 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  const api = useCallback(async (path: string, opts?: RequestInit): Promise<any> => {
-    if (!envOk) throw new Error('环境变量没配好');
-    const res = await fetch(`${base}${path}`, opts);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const d = await res.json().catch(() => null);
-    if (!d || d.success === false) throw new Error(d?.error || '后端报错');
-    return d;
-  }, [base, envOk]);
+  const api = useCallback(makeDeskApi(base, envOk), [base, envOk]);
 
   const load = useCallback(async (withStateFlag: boolean, stateJson: string) => {
     setLoading(true); setError('');
@@ -238,7 +226,7 @@ export default function CustomCgRoom({ base, envOk, onGoBack }: { base: string; 
       )}
 
       {/* ── 模拟 state / 解锁预览 ── */}
-      <div style={{ ...glassStyle, padding: '14px 16px', marginBottom: 16 }}>
+      <div style={{ ...glassCard, padding: '14px 16px', marginBottom: 16 }}>
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
           <div style={{ flex: '1 1 320px', minWidth: 240 }}>
             <div style={{ fontSize: 12, color: 'var(--ink2)', marginBottom: 5 }}>
@@ -326,7 +314,7 @@ export default function CustomCgRoom({ base, envOk, onGoBack }: { base: string; 
         loading ? (
           <div style={{ fontSize: 13, color: 'var(--ink2)' }}>正在加载 CG…</div>
         ) : cgs.length === 0 ? (
-          <div style={{ ...glassStyle, padding: '20px 22px', fontSize: 13, color: 'var(--ink2)' }}>
+          <div style={{ ...glassCard, padding: '20px 22px', fontSize: 13, color: 'var(--ink2)' }}>
             还没有自定义 CG。点「＋ 新建 CG」上传一张图或只写占位，并配好场景/条件。
           </div>
         ) : (

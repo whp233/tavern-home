@@ -6,6 +6,7 @@
 // conversationId/conversationLength（反向递归锚点，联动 task-13/14）。
 // 颜色只走 var(--xxx) token，不写死色号。
 
+import { glassCard, makeDeskApi } from './sharedUi';
 import { useState, useEffect, useCallback } from 'react';
 import { useFloatingTask, FloatingTaskBall } from './useFloatingTask';
 
@@ -44,12 +45,6 @@ const cardStyle: React.CSSProperties = {
   border: '1px solid var(--line-soft)',
   borderRadius: 22,
   boxShadow: '0 6px 18px var(--card-shadow)',
-};
-const glassStyle: React.CSSProperties = {
-  background: 'var(--glass-bg)',
-  border: '1.5px dashed var(--dash-line)',
-  borderRadius: 22,
-  boxShadow: '0 4px 16px var(--card-shadow)',
 };
 const pillStyle: React.CSSProperties = {
   display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 14, color: 'var(--ink2)',
@@ -104,14 +99,7 @@ export default function DiaryRoom({ base, envOk, onGoBack }: { base: string; env
   // 26C 悬浮球后台化：日记保存/批量共用一颗球，AbortController -> signal -> fetch
   const floating = useFloatingTask('日记生成中');
 
-  const api = useCallback(async (path: string, opts?: RequestInit & { signal?: AbortSignal }): Promise<any> => {
-    if (!envOk) throw new Error('环境变量没配好');
-    const res = await fetch(`${base}${path}`, opts);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const d = await res.json().catch(() => null);
-    if (!d || d.success === false) throw new Error(d?.error || '后端报错');
-    return d;
-  }, [base, envOk]);
+  const api = useCallback(makeDeskApi(base, envOk), [base, envOk]);
 
   const loadDates = useCallback(async () => {
     setLoadingDates(true); setError('');
@@ -272,7 +260,7 @@ export default function DiaryRoom({ base, envOk, onGoBack }: { base: string; env
 
       {/* ── 日期刻度（时间线：妹居 diary-scale-track 同款） ── */}
         {/* ── 垂直时间线（按时间线划分）· 左侧纵轴 + 右侧概览 ── */}
-        <div style={{ ...glassStyle, padding: 0, marginBottom: 16, overflow: 'hidden' }}>
+        <div style={{ ...glassCard, padding: 0, marginBottom: 16, overflow: 'hidden' }}>
           <div style={{ display: 'flex', flexDirection: 'row', minHeight: 140 }}>
             <div style={{ width: 200, flex: 'none', borderRight: '1px solid var(--line-soft)', background: 'color-mix(in srgb, var(--scale-0) 70%, var(--card-bg))', padding: '16px 10px 16px 0', maxHeight: 360, overflowY: 'auto' }}>
               <div style={{ fontSize: 11, letterSpacing: 1.5, color: 'var(--ink2)', marginBottom: 12, paddingLeft: 18 }}>时间线</div>
@@ -336,7 +324,7 @@ export default function DiaryRoom({ base, envOk, onGoBack }: { base: string; env
             </div>
           </div>
         </div>
-      <div style={{ ...glassStyle, padding: 0, marginBottom: 16, display: 'none' }}>
+      <div style={{ ...glassCard, padding: 0, marginBottom: 16, display: 'none' }}>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <span style={{ fontSize: 12.5, color: 'var(--ink2)', flex: 'none' }}>时间线</span>
           {loadingDates ? (

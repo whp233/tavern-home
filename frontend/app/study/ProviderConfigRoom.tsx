@@ -8,6 +8,7 @@
 //   source:'override' = 网页端配的(注册表 id 覆盖 or custom:<随机> 自定义),可编辑/删除。
 // 「当前」标记 = localStorage.oc_desk_provider(打字桌顶栏「商」弹层也读这一把,两边是同一个默认)。
 
+import { glassCard } from './sharedUi';
 import { useState, useEffect, useRef } from 'react';
 import TokenUsagePanel from './TokenUsagePanel';
 
@@ -68,9 +69,6 @@ const DEFAULT_PRESET_KEY = 'deepseek';
 // ── 玻璃卡片小料(照 page.tsx 同款数值抄一份,本仓惯例) ──
 const cardStyle: React.CSSProperties = {
   background: 'var(--card-bg)', border: '1px solid var(--line-soft)', borderRadius: 22, boxShadow: '0 6px 18px var(--card-shadow)',
-};
-const glassCardStyle: React.CSSProperties = {
-  background: 'var(--glass-bg)', border: '1.5px dashed var(--dash-line)', borderRadius: 22, boxShadow: '0 4px 16px var(--card-shadow)',
 };
 const pillStyle: React.CSSProperties = {
   display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 14, color: 'var(--ink2)',
@@ -387,7 +385,7 @@ export default function ProviderConfigRoom({ base, envOk, onChanged, onGoBack }:
         <div
           className="card"
           style={{
-            ...glassCardStyle,
+            ...glassCard,
             padding: '12px 18px',
             fontSize: 13,
             color: feedback.kind === 'ok' ? 'var(--ink-deep)' : '#c2693f',
@@ -407,7 +405,7 @@ export default function ProviderConfigRoom({ base, envOk, onChanged, onGoBack }:
             <button className="serc" onClick={load} style={pillStyle}>重试</button>
           </div>
         ) : !list || list.length === 0 ? (
-          <div className="card" style={{ ...glassCardStyle, padding: '26px 28px' }}>
+          <div className="card" style={{ ...glassCard, padding: '26px 28px' }}>
             <div className="serc" style={{ fontSize: 15, color: 'var(--ink-deep)' }}>还没有配置模型供应商，AI 写作暂时不可用</div>
             <div style={{ fontSize: 12.5, color: 'var(--ink2)', marginTop: 8 }}>
               在下面新建一个：选预设 → 填 API Key（Base URL / Model 可空），保存即可在打字桌里开写。
@@ -542,7 +540,7 @@ export default function ProviderConfigRoom({ base, envOk, onChanged, onGoBack }:
       <TokenUsagePanel base={base} envOk={envOk} />
 
       {/* 新增供应商 */}
-      <div className="card" style={{ ...glassCardStyle, padding: '20px 24px' }}>
+      <div className="card" style={{ ...glassCard, padding: '20px 24px' }}>
         <div className="serc" style={{ fontSize: 15, color: 'var(--ink-deep)', marginBottom: 12 }}>新增供应商</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
           <div>

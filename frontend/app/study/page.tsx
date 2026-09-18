@@ -4,6 +4,7 @@
 // 对接 /api/oc/* REST 接口,按约定字段读写;fetch 一律 try/catch,res.ok 和 body.success 都要验,
 // 加载/错误/空态分开显示,不把"没查到"和"查失败"混为一谈。颜色只走 var(--xxx) token,不写死色号。
 
+import { fmtMD, glassCard } from './sharedUi';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import HeatBg from '../HeatBg';
 import ReadingCorner from './ReadingCorner';
@@ -84,12 +85,6 @@ const cardStyle: React.CSSProperties = {
   borderRadius: 22,
   boxShadow: '0 6px 18px var(--card-shadow)',
 };
-const glassCardStyle: React.CSSProperties = {
-  background: 'var(--glass-bg)',
-  border: '1.5px dashed var(--dash-line)',
-  borderRadius: 22,
-  boxShadow: '0 4px 16px var(--card-shadow)',
-};
 const pillStyle: React.CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
@@ -127,13 +122,6 @@ const inputStyle: React.CSSProperties = {
   boxSizing: 'border-box',
 };
 
-function fmtMD(iso: string): string {
-  try {
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return iso;
-    return `${d.getMonth() + 1}/${d.getDate()}`;
-  } catch { return iso; }
-}
 
 // preview/正文两行截断的小样式(卡片里用)
 const clamp2: React.CSSProperties = {
@@ -793,7 +781,7 @@ export default function StudyPage() {
             {/* 供应商首次引导横幅:全新状态(provider-config 空)才显示,配好即消失——
                 玻璃卡片风,点「去配置」进供应商房间(左廊第四扇门「商」)。 */}
             {Array.isArray(providerCfg) && providerCfg.length === 0 && !providerCfgError && (
-              <div className="card" style={{ ...glassCardStyle, padding: '18px 24px', marginBottom: 24, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+              <div className="card" style={{ ...glassCard, padding: '18px 24px', marginBottom: 24, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
                 <span className="serc" style={{ fontSize: 15, color: 'var(--ink-deep)' }}>还没有配置模型供应商，AI 写作暂时不可用</span>
                 <button className="serc" onClick={() => navigate('providers')} style={{ ...btnPrimaryStyle, marginLeft: 'auto', whiteSpace: 'nowrap' }}>去配置</button>
               </div>
@@ -1023,7 +1011,7 @@ export default function StudyPage() {
             <div
               onClick={() => jumpToChaptersStudio(currentProject)}
               className="card"
-              style={{ ...glassCardStyle, padding: '13px 18px', marginBottom: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}
+              style={{ ...glassCard, padding: '13px 18px', marginBottom: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}
             >
               <span className="serc" style={{ fontSize: 14, color: 'var(--ink-deep)' }}>剧情总结</span>
               <span style={{ fontSize: 12, color: 'var(--ink2)' }}>不在书架上——按章存在读书角·章节工房</span>
@@ -1063,7 +1051,7 @@ export default function StudyPage() {
             ) : listError ? (
               <div className="card" style={{ ...cardStyle, padding: '20px 24px', fontSize: 13, color: '#c2693f' }}>翻不开：{listError}</div>
             ) : listItems.length === 0 ? (
-              <div className="card" style={{ ...glassCardStyle, padding: '20px 24px', fontSize: 13, color: 'var(--ink2)' }}>这一格还空着~</div>
+              <div className="card" style={{ ...glassCard, padding: '20px 24px', fontSize: 13, color: 'var(--ink2)' }}>这一格还空着~</div>
             ) : (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 14 }}>
                 {listItems.map((it) => (

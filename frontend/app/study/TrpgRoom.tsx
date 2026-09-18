@@ -3,6 +3,7 @@
 // TRPG 剧情模式房门（task-21）：列剧本  开始  选动作  GM 叙述/判定  状态机结算。
 // 对接 /api/oc/trpg/*；fetch 一律 try/catch，res.ok 和 body.success 都要验（书房家法）。
 
+import { glassCard, makeDeskApi } from './sharedUi';
 import { useCallback, useEffect, useState } from 'react';
 
 type TrpgScenarioSummary = {
@@ -69,12 +70,6 @@ const cardStyle: React.CSSProperties = {
   borderRadius: 22,
   boxShadow: '0 6px 18px var(--card-shadow)',
 };
-const glassStyle: React.CSSProperties = {
-  background: 'var(--glass-bg)',
-  border: '1.5px dashed var(--dash-line)',
-  borderRadius: 22,
-  boxShadow: '0 4px 16px var(--card-shadow)',
-};
 const pillStyle: React.CSSProperties = {
   display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 14, color: 'var(--ink2)',
   background: 'var(--card-bg)', border: '1px solid var(--line-soft)', padding: '7px 16px',
@@ -117,14 +112,7 @@ export default function TrpgRoom({ base, envOk, onGoBack }: { base: string; envO
   const [selectedChars, setSelectedChars] = useState<string[]>([]);
   const [charsLoading, setCharsLoading] = useState(false);
 
-  const api = useCallback(async (path: string, opts?: RequestInit): Promise<any> => {
-    if (!envOk) throw new Error('环境变量没配好');
-    const res = await fetch(`${base}${path}`, opts);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const d = await res.json().catch(() => null);
-    if (!d || d.success === false) throw new Error(d?.error || '后端报错');
-    return d;
-  }, [base, envOk]);
+  const api = useCallback(makeDeskApi(base, envOk), [base, envOk]);
 
   const loadScenarios = useCallback(async () => {
     setLoading(true); setError('');
@@ -303,7 +291,7 @@ export default function TrpgRoom({ base, envOk, onGoBack }: { base: string; envO
                 ))}
               </div>
               {/* ── 定制：玩家偏好 + 多角色卡 ── */}
-              <div style={{ ...glassStyle, padding: '14px 16px', marginTop: 16 }}>
+              <div style={{ ...glassCard, padding: '14px 16px', marginTop: 16 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink-deep)', marginBottom: 8 }}>定制生成（可选）</div>
                 <div style={{ fontSize: 11.5, color: 'var(--ink2)', marginBottom: 8 }}>偏好会在模型生成时注入 GM 叙述；角色卡勾选后 GM 会按该角色的性格/口吻/关系做定制，允许多选。</div>
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
@@ -374,7 +362,7 @@ export default function TrpgRoom({ base, envOk, onGoBack }: { base: string; envO
 
           {/*  骰子结果  */}
           {result?.dice && (
-            <div className="card" style={{ ...glassStyle, padding: '14px 18px', marginBottom: 16, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            <div className="card" style={{ ...glassCard, padding: '14px 18px', marginBottom: 16, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
               <span style={{ fontSize: 24 }}></span>
               <span className="mono" style={{ fontSize: 15, color: 'var(--ink-deep)' }}>
                 {result.dice.d20} + {result.dice.bonus} = {result.dice.total} vs DC {result.dice.target}
@@ -400,7 +388,7 @@ export default function TrpgRoom({ base, envOk, onGoBack }: { base: string; envO
                   key={`${ev.type}-${i}`}
                   className="card"
                   style={{
-                    ...glassStyle,
+                    ...glassCard,
                     padding: '10px 14px',
                     display: 'flex',
                     alignItems: 'center',

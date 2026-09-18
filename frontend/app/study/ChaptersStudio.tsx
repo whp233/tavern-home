@@ -8,6 +8,7 @@
 // fetch 全 try/catch,先读 body 再判断(res.ok && d.success 双验,别在读 body 前就先扔),
 // 变更类请求收紧到 success===true 才算数,读类放宽到 success!==false。
 
+import { fmtMD } from './sharedUi';
 import { useState, useEffect, useRef } from 'react';
 import { useFloatingTask, FloatingTaskBall } from './useFloatingTask';
 
@@ -80,14 +81,6 @@ const warnBannerStyle: React.CSSProperties = {
 // 的触顶判断对得上。全套游标分页留到真正需要时再加(章=篇章粒度,一年几十章,离触顶还早)。
 const CHAPTERS_FETCH_LIMIT = 200;
 
-function fmtMD(iso?: string | null): string {
-  if (!iso) return '';
-  try {
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return iso;
-    return `${d.getMonth() + 1}/${d.getDate()}`;
-  } catch { return iso; }
-}
 
 // 章节号自然排序(手搓比较器,同 reading.ts naturalCompare 一个思路——运行环境的 ICU 裁剪版对
 // localeCompare 的 numeric 选项不可靠;这里前端只管升序展示,空章节号沉底)

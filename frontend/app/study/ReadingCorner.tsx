@@ -6,6 +6,7 @@
 // fetch 全 try/catch,res.ok 和 body.success 双验,加载/错误/空态三态分开,不把"没查到"和"查失败"
 // 混为一谈;跨页导航不在这里发生(内部视图切换靠 state)。
 
+import { fmtMD, glassCard } from './sharedUi';
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import ChaptersStudio from './ChaptersStudio';
 
@@ -34,9 +35,6 @@ function authorLabel(c: CommentRec): string {
 const cardStyle: React.CSSProperties = {
   background: 'var(--card-bg)', border: '1px solid var(--line-soft)', borderRadius: 22, boxShadow: '0 6px 18px var(--card-shadow)',
 };
-const glassCardStyle: React.CSSProperties = {
-  background: 'var(--glass-bg)', border: '1.5px dashed var(--dash-line)', borderRadius: 22, boxShadow: '0 4px 16px var(--card-shadow)',
-};
 const pillStyle: React.CSSProperties = {
   display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 14, color: 'var(--ink2)',
   background: 'var(--card-bg)', border: '1px solid var(--line-soft)', padding: '7px 16px', borderRadius: 30,
@@ -52,14 +50,6 @@ const inputStyle: React.CSSProperties = {
 };
 const clamp2: React.CSSProperties = { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' };
 
-function fmtMD(iso?: string | null): string {
-  if (!iso) return '';
-  try {
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return iso;
-    return `${d.getMonth() + 1}/${d.getDate()}`;
-  } catch { return iso; }
-}
 
 // 章号自然序(字符串序会把"第5章"排到"第38章"后面,追更顺序必须按数字):取开头的阿拉伯数字比较,
 // 纯字母/空按字符串序兜底。ReadingCorner 与 ChaptersStudio 各自留一份(本仓惯例)。
@@ -403,7 +393,7 @@ export default function ReadingCorner({
           {chaptersProject ? (
             <ChaptersStudio base={base} envOk={envOk} project={chaptersProject} onEditorOpenChange={setStudioEditorOpen} initialEditId={studioInitialEditId ?? undefined} />
           ) : (
-            <div className="card" style={{ ...glassCardStyle, padding: '20px 24px', fontSize: 13, color: 'var(--ink2)' }}>
+            <div className="card" style={{ ...glassCard, padding: '20px 24px', fontSize: 13, color: 'var(--ink2)' }}>
               先选一个项目,才能看它的章节架~
             </div>
           )}
@@ -420,7 +410,7 @@ export default function ReadingCorner({
           ) : listError ? (
             <div className="card" style={{ ...cardStyle, padding: '20px 24px', fontSize: 13, color: '#c2693f' }}>翻不开：{listError}</div>
           ) : bookTabs.length === 0 ? (
-            <div className="card" style={{ ...glassCardStyle, padding: '20px 24px', fontSize: 13, color: 'var(--ink2)' }}>
+            <div className="card" style={{ ...glassCard, padding: '20px 24px', fontSize: 13, color: 'var(--ink2)' }}>
               连载还没开张~去「章节工房」写第一章,发布了就摆到这儿来
             </div>
           ) : (
@@ -462,7 +452,7 @@ export default function ReadingCorner({
           ) : listError ? (
             <div className="card" style={{ ...cardStyle, padding: '20px 24px', fontSize: 13, color: '#c2693f' }}>翻不开：{listError}</div>
           ) : visibleChapters.length === 0 ? (
-            <div className="card" style={{ ...glassCardStyle, padding: '20px 24px', fontSize: 13, color: 'var(--ink2)' }}>
+            <div className="card" style={{ ...glassCard, padding: '20px 24px', fontSize: 13, color: 'var(--ink2)' }}>
               这本书还没有已发布的章节~去「章节工房」写第一章
             </div>
           ) : (
