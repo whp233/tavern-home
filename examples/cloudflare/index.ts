@@ -385,7 +385,7 @@ async function handleDeskAdmin(request: Request, env: Env, url: URL, ctx: Execut
   }
   if (url.pathname === '/api/oc/stats' && request.method === 'GET') {
     // One read-path implementation: StudyService.stats() is the same aggregate the MCP shelf
-    // tool's stats action serves (src/mcp/server.ts), not a second copy of the grouping logic.
+    // tool's stats action serves (tests/helpers/mcpServer.ts，测试侧 MCP 面), not a second copy of the grouping logic.
     const r = await new StudyService(new D1StudyStorage(env.OC_DB)).stats();
     return json(request, env, r, r.success ? 200 : 500);
   }

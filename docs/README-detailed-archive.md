@@ -83,8 +83,8 @@
 ```ts
 import { createMemoryStorage } from './src/adapters/memoryStorage.ts';
 import { FakeModelBackend } from './src/adapters/fakeModelBackend.ts';
-import { TavernStudyHost } from './src/core/tavernStudyHost.ts';
-import { TavernStudyMcpServer } from './src/mcp/server.ts';
+import { TavernStudyHost } from './tests/helpers/tavernStudyHost.ts';
+import { TavernStudyMcpServer } from './tests/helpers/mcpServer.ts';
 
 const storage = createMemoryStorage({ /* 你的章节、配方、资产种子数据 */ });
 const model = new FakeModelBackend({
@@ -104,8 +104,8 @@ const mcp = new TavernStudyMcpServer(host, authContext);
   - `ModelBackend`（`src/core/modelBackend.ts`）：`streamChat(args): Promise<StreamChatResult>` 一个方法，流式对话的唯一注入点。
   - `SemanticSearchAdapter`（`src/core/storage.ts`）：可选，缺失时语义检索优雅降级，其余功能不受影响。
   - `AuthContext` / `authenticate()`（`src/auth.ts`）：actor 身份 + scope 集合，MCP 面和参考 Worker 的评论/发布路由共用。
-- **`TavernStudyHost`**（`src/core/tavernStudyHost.ts`）：把上面几类合同和三个服务组装成一个注入式入口，`reading`/`study`/`desk` 挂在实例上，另外提供 `generateDeskTurn`/`foldDeskTimeline`/`refreshDeskBoard`/`importDeskAssetPack` 几个跨服务动作。
-- **`TavernStudyMcpServer`**（`src/mcp/server.ts`）：只暴露两个 MCP 工具（`shelf`/`bookclub`）的传输无关调度器，见下文「MCP 面」。
+- **`TavernStudyHost`**（`tests/helpers/tavernStudyHost.ts`）：把上面几类合同和三个服务组装成一个注入式入口，`reading`/`study`/`desk` 挂在实例上，另外提供 `generateDeskTurn`/`foldDeskTimeline`/`refreshDeskBoard`/`importDeskAssetPack` 几个跨服务动作。
+- **`TavernStudyMcpServer`**（`tests/helpers/mcpServer.ts`）：只暴露两个 MCP 工具（`shelf`/`bookclub`）的传输无关调度器，见下文「MCP 面」。
 - **`MemoryStorage`**（`src/adapters/memoryStorage.ts`）：纯内存实现全部 `StorageAdapter` 子接口，是测试地基，也是最简单的"接自己的数据库"参照样板。
 - **`examples/cloudflare/`**：D1 + 可选 Vectorize/Workers AI 的参考宿主。⚠️它自己的打字桌聊天/时光带折叠/状态板重算路由（`src/chat/desk.ts`、`src/chat/deskTimeline.ts`、`src/chat/deskBoardRefresh.ts`）是直接拼 D1 存储 + Anthropic 调用写的，**不经过 `TavernStudyHost`**；`TavernStudyHost`/`TavernStudyMcpServer` 只在这份参考里被当作"如何嵌入"的说明，`/mcp` 路由本身返回 `501`，故意不提供托管 MCP 会话，见下文「MCP 面」。
 - **`frontend/`**：Next.js 静态导出的书房界面，通过 `NEXT_PUBLIC_WORKER_URL` + `NEXT_PUBLIC_AUTH_TOKEN` 两个环境变量拼出 API base（`${WORKER_URL}/${AUTH_TOKEN}`），对接参考 Worker 的 `/{AUTH_TOKEN}/api/oc/*` 写手管理面。
@@ -142,7 +142,7 @@ const mcp = new TavernStudyMcpServer(host, authContext);
 | Injection position/depth | 导入时解析并落库（`injection_position`/`injection_depth`/`injection_order`） | 装配排队只按 `queue_pos` 排序，**不按 injection depth 重新定位**——是"有解析、无完整 ST 注入语义"，不是"完整实现"（`src/tools/desk.ts` 导入 vs `src/chat/deskAssemble.ts` `buildOrderedQueue`） |
 | 队列里 system/user/assistant 混排 | 队列前段（chatHistory 之前）遇到第一个 user/assistant 角色块之后，后续块全部降级进 tail、带角色标签 | 这是 Claude 单 system envelope 不支持"历史中途再插一条真 system"的限制，不是能力阉割；相对顺序仍然保留（`src/chat/deskAssemble.ts` 装配 pre 队列处的注释） |
 | 世界书 / 角色卡关键词 | 基础关键词子串命中（大小写不敏感）+ `constant`（常驻）+ `presence`（本项目扩展的"仅看结构化在场名单"档位） | **不支持** secondary keys、AND/NOT 逻辑、递归触发预算、扫描深度模拟（`src/tools/deskMacro.ts` `matchLoreKeys`、`src/chat/deskAssemble.ts`） |
-| 长期摘要（时光带） | 每窗口最多保留 20 段摘要，超限淘汰最老一段；原始楼层原文永不删除，只是淘汰段离开模型上下文 | 这是**有损**设计，明说不装：淘汰段之后不可再被模型看到，除非人工回读原文楼层（`src/chat/deskTimeline.ts`、`src/core/tavernStudyHost.ts`，segs 数组硬顶 20） |
+| 长期摘要（时光带） | 每窗口最多保留 20 段摘要，超限淘汰最老一段；原始楼层原文永不删除，只是淘汰段离开模型上下文 | 这是**有损**设计，明说不装：淘汰段之后不可再被模型看到，除非人工回读原文楼层（`src/chat/deskTimeline.ts`、`tests/helpers/tavernStudyHost.ts`，segs 数组硬顶 20） |
 | 角色卡导入 | 支持 SillyTavern V1/V2/V3 角色卡文件（`.json` / PNG 内嵌 `ccv3`/`chara` tEXt 块）导入，落成书架一条 `is_char=1` 条目；`character_book` 按世界书子集语义一并导入 | 不认识的字段一律忽略并计入 `warnings`；`first_mes`/`alternate_greetings` 只回吐给前端展示，不落库（`src/core/characterCard.ts` 解析、`src/tools/desk.ts` `importCharacterCard` 落库） |
 | 语义检索 | 可选 `SemanticSearchAdapter` | 不绑定时 `StudyService.search()` 返回 `capability:'disabled'`，其余 CRUD 与关键词世界书正常工作（`src/core/studyService.ts`） |
 | 模型连接 | Anthropic Messages 流式子集 | 见下方「边界与降级」 |

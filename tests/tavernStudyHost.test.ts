@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMemoryStorage } from '../src/adapters/memoryStorage.ts';
 import { FakeModelBackend } from '../src/adapters/fakeModelBackend.ts';
-import { TavernStudyHost } from '../src/core/tavernStudyHost.ts';
-import { TavernStudyMcpServer } from '../src/mcp/server.ts';
+import { TavernStudyHost } from './helpers/tavernStudyHost.ts';
+import { TavernStudyMcpServer } from './helpers/mcpServer.ts';
 import type { AuthContext } from '../src/auth.ts';
 import type { ModelBackend, StreamChatArgs } from '../src/core/modelBackend.ts';
 

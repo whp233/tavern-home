@@ -1,14 +1,14 @@
-import type { ModelBackend } from './modelBackend.ts';
-import type { SemanticSearchAdapter, StorageAdapter } from './storage.ts';
-import { ReadingService } from './readingService.ts';
-import { StudyService } from './studyService.ts';
-import { DeskService } from './deskService.ts';
-import { DeskGenerationService } from './deskGenerationService.ts';
-import { assembleDesk } from '../chat/deskAssemble.ts';
-import type { DeskAssetPack } from './storage.ts';
-import { parseStateBoard } from './stateBoard.ts';
+import type { ModelBackend } from '../../src/core/modelBackend.ts';
+import type { SemanticSearchAdapter, StorageAdapter } from '../../src/core/storage.ts';
+import { ReadingService } from '../../src/core/readingService.ts';
+import { StudyService } from '../../src/core/studyService.ts';
+import { DeskService } from '../../src/core/deskService.ts';
+import { DeskGenerationService } from '../../src/core/deskGenerationService.ts';
+import { assembleDesk } from '../../src/chat/deskAssemble.ts';
+import type { DeskAssetPack } from '../../src/core/storage.ts';
+import { parseStateBoard } from '../../src/core/stateBoard.ts';
 import { extractAssistantFoldBody, selectDeskTimelineFoldBatch } from './deskTimelineFold.ts';
-import { DESK_TIMELINE_KEEP } from './deskLimits.ts';
+import { DESK_TIMELINE_KEEP } from '../../src/core/deskLimits.ts';
 
 // Auto-fold only kicks in once the un-folded tail grows past this many floors; a single call
 // folds at most BATCH_MAX of them, always leaving DESK_TIMELINE_KEEP floors of raw text behind.

@@ -83,7 +83,7 @@ NEXT_PUBLIC_AUTH_TOKEN=replace-with-your-own-auth-token
 
 ## 四、MCP：注册给自家 AI
 
-`TavernStudyMcpServer`（`src/mcp/server.ts`）只暴露 `shelf`/`bookclub` 两个工具，见 README「MCP 面」一节的完整 action 面、scope 要求。这里补充"怎么接进自己的宿主"：
+`TavernStudyMcpServer`（`tests/helpers/mcpServer.ts`）只暴露 `shelf`/`bookclub` 两个工具，见 README「MCP 面」一节的完整 action 面、scope 要求。这里补充"怎么接进自己的宿主"：
 
 1. 构造好 `StorageAdapter`/`ModelBackend`，new 一个 `TavernStudyHost`。
 2. 在你的 MCP 传输层（HTTP/WebSocket/stdio，随你）收到请求时，先在传输边界完成鉴权（校验 Bearer token，见 `src/auth.ts` 的 `authenticate()`/`hasScope()`，或者你自己的鉴权逻辑），得到一个 `AuthContext`。

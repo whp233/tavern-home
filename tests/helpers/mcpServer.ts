@@ -1,5 +1,5 @@
-import type { TavernStudyHost } from '../core/tavernStudyHost.ts';
-import type { AuthContext, Scope } from '../auth.ts';
+import type { TavernStudyHost } from './tavernStudyHost.ts';
+import type { AuthContext, Scope } from '../../src/auth.ts';
 
 export interface McpRequest { jsonrpc: '2.0'; id?: string | number; method: string; params?: unknown }
 export interface TavernStudyMcpOptions {}
