@@ -4,6 +4,7 @@
 // 酒馆最小闭环 = 配置条目（图/占位 + 场景键 + 条件表达式）+ 按 state 计算解锁。
 
 import type { CustomCgEntry } from './types.ts';
+import { evaluateCondition } from './conditionExpr.ts';
 
 export const CG_TITLE_MAX = 200;
 export const CG_PROJECT_MAX = 100;
@@ -56,17 +57,15 @@ export function cgSceneOf(state: Record<string, unknown>): string {
   return String(raw ?? '');
 }
 
-// 条件表达式求值：空串恒真；带 state 的 JS 表达式用 with(state) 执行（本地用户自配，安全边界同村规）。
+// 条件表达式求值：空串恒真；其余交给白名单求值器。
+//
+// ⚠️ 2026-09-24 换实现。原来用 `new Function('state', 'with (state) {...}')`，
+// 而 Cloudflare Workers **禁止动态代码求值**（官方文档明列 eval() / new Function 不可用），
+// workerd 里抛 EvalError 后被这里吞掉 → **恒返回 false**。
+// 也就是说：CG 解锁条件、TRPG 结局条件、动作门禁在线上**从来没生效过**。
+// 现在走 src/core/conditionExpr.ts 的白名单求值器，语法集见该文件头注释。
 export function evaluateCgCondition(condition: string, state: Record<string, unknown>): boolean {
-  const expr = String(condition ?? '').trim();
-  if (!expr) return true;
-  try {
-    // new Function 默认非严格模式，with(state) 可让条件直接写 yuki_power >= 50。
-    const fn = new Function('state', `with (state) { return !!(${expr}); }`);
-    return fn(state);
-  } catch {
-    return false;
-  }
+  return evaluateCondition(condition, state);
 }
 
 // 解锁判断：enabled + 场景键匹配 + 条件表达式。
