@@ -2,6 +2,7 @@ import type { DeskTurnCommit, DeskTurnStorage } from './storage.ts';
 import type { DeskFloor } from './types.ts';
 import type { ModelBackend, ModelStreamEvent } from './modelBackend.ts';
 import { parseStateBoard } from './stateBoard.ts';
+import { normalizeErrorKind, decideRetry, failureNotice, type RetryPolicy, DEFAULT_RETRY_POLICY } from './generationRetry.ts';
 
 function unwrapContentTag(text: string): string {
   let value = String(text || ''); const open = '<content>'; const close = '</content>';
@@ -27,6 +28,10 @@ export interface GenerateDeskTurnInput {
   styleRefBlock?: string;
   signal?: AbortSignal;
   onEvent?: (event: ModelStreamEvent) => void | Promise<void>;
+  // task-57：失败自动重生成策略（可选，缺省 DEFAULT_RETRY_POLICY：最多 2 次 + 指数退避，绝不无限重试）。
+  retryPolicy?: RetryPolicy;
+  // 失败可见：每次决定重试/放弃时回调（前端据此显示提示，不静默吞错）。
+  onRetryNotice?: (notice: string, attempt: number) => void;
 }
 
 // ===== 参考小说/风格（task-19）：配置清洗与提示词装配 =====
@@ -76,26 +81,50 @@ export class DeskGenerationService {
     const system = input.styleRefBlock && input.styleRefBlock.trim()
       ? [...input.system, { text: input.styleRefBlock.trim(), cache: false }]
       : input.system;
-    const generated = await this.backend.streamChat({ system, prompt: input.prompt, model: input.model, signal: input.signal, onEvent: input.onEvent });
-    if (!generated.ok) return { success: false, error: generated.kind, detail: generated.detail, usage: generated.usage };
-    if (generated.stopReason && generated.stopReason !== 'end_turn' && generated.stopReason !== 'stop') {
-      const truncated = generated.stopReason === 'max_tokens' || generated.stopReason === 'length';
-      // prompt-diet: 非截断的未知 stopReason 按完成处理，不再判 protocol 重试，减少 thinking 规划负担
-      if (truncated) return { success: false, error: 'limit', detail: generated.stopReason, usage: generated.usage };
-      // 其它未知原因(如 tool_calls)按完成容错，不中断
+    // task-57：失败自动重生成——只重试「瞬时故障」（http/timeout/fetch/protocol/empty），
+    // 且**有上限**（默认 ≤2 次 + 指数退避）。config/limit/aborted/conflict 一律不重放（重放坏结果 = 烧 token 无收益）。
+    const retryPolicy = input.retryPolicy ?? DEFAULT_RETRY_POLICY;
+    let attempt = 0;
+    let generated: Awaited<ReturnType<ModelBackend['streamChat']>>;
+    let content = '';
+    let parsed: ReturnType<typeof parseStateBoard> = { board: null, content: '' };
+    for (;;) {
+      generated = await this.backend.streamChat({ system, prompt: input.prompt, model: input.model, signal: input.signal, onEvent: input.onEvent });
+      if (!generated.ok) {
+        attempt += 1;
+        const kind = normalizeErrorKind(generated.kind);
+        const decision = decideRetry(kind, attempt, retryPolicy);
+        input.onRetryNotice?.(failureNotice(kind, attempt, retryPolicy), attempt);
+        if (decision.action === 'give_up') return { success: false, error: generated.kind, detail: generated.detail, usage: generated.usage };
+        if (decision.delayMs > 0) await new Promise((r) => setTimeout(r, decision.delayMs));
+        if (input.signal?.aborted) return { success: false, error: 'aborted' };
+        continue;
+      }
+      if (input.signal?.aborted) return { success: false, error: 'aborted', usage: generated.usage };
+      if (generated.stopReason && generated.stopReason !== 'end_turn' && generated.stopReason !== 'stop') {
+        const truncated = generated.stopReason === 'max_tokens' || generated.stopReason === 'length';
+        // prompt-diet: 非截断的未知 stopReason 按完成处理，不再判 protocol 重试，减少 thinking 规划负担
+        if (truncated) return { success: false, error: 'limit', detail: generated.stopReason, usage: generated.usage };
+        // 其它未知原因(如 tool_calls)按完成容错，不中断
+      }
+      parsed = parseStateBoard(generated.text);
+      const rawContent = parsed.content ?? generated.text;
+      content = unwrapContentTag(rawContent);
+      if (content.trim()) break;
+      // 空回复：按瞬时故障处理（可退避重试，但有上限，绝不死循环）。
+      attempt += 1;
+      const emptyDecision = decideRetry('empty', attempt, retryPolicy);
+      input.onRetryNotice?.(failureNotice('empty', attempt, retryPolicy), attempt);
+      if (emptyDecision.action === 'give_up') return { success: false, error: 'empty', usage: generated.usage };
+      if (emptyDecision.delayMs > 0) await new Promise((r) => setTimeout(r, emptyDecision.delayMs));
+      if (input.signal?.aborted) return { success: false, error: 'aborted' };
     }
-    if (input.signal?.aborted) return { success: false, error: 'aborted', usage: generated.usage };
-    const parsed = parseStateBoard(generated.text);
     const stateBoard = parsed.board ?? input.stateBoard;
-    // prompt-diet: 抽不到 <content> 就用原文，不判 empty 由上层处理；围栏抽取失败按正文容错
-    const rawContent = parsed.content ?? generated.text;
-    const content = unwrapContentTag(rawContent);
-    if (!content.trim()) return { success: false, error: 'empty', usage: generated.usage };
     const { boardBefore: _boardBefore, boardAfter: _boardAfter, stateBoardStale: _stateBoardStale, commitToken: _commitToken, ...safeReport } = input.report;
     const commit: DeskTurnCommit = { content, thinking: generated.thinking.trim() || null,
       report: { ...safeReport, stateBoardStale: parsed.board === null,
         ...(input.boardBeforeTrusted ? { boardBefore: input.stateBoard } : {}), boardAfter: stateBoard }, stateBoard,
-      committedAt: input.committedAt };
+        committedAt: input.committedAt };
     const floor = input.mode === 'normal'
       ? await this.turns.commitAssistantFloor(input.windowId, input.floorId, commit)
       : await this.turns.rollAssistantFloor({ windowId: input.windowId, floorId: input.floorId, expected: input.expectedFloor!, commit });
