@@ -8,6 +8,7 @@ import type {
   GmParsedOutput,
   TrpgAction,
   TrpgActionResult,
+  TrpgActionView,
   TrpgDiceResult,
   TrpgEnding,
   TrpgGameEvent,
@@ -66,10 +67,46 @@ export function isLocationUnlocked(scenario: TrpgScenario, state: TrpgState, loc
   return unlockedArray(state).includes(locationId);
 }
 
-export function getAvailableActions(scenario: TrpgScenario, state: TrpgState): TrpgAction[] {
+// ── 场景选项系统（2026-09-24 赋能）──────────────────────────────────
+// 改造前这里是一条写死的谓词（只判断 requiresItem）。
+// 现在拆成两档：visible（显不显示）/ enabled（能不能点）。
+// 缺省值刻意做成「等价于改造前」，所以旧剧本行为逐字节不变。
+
+/** 单个动作的可见性 / 可用性判定。 */
+function viewOf(action: TrpgAction, state: TrpgState, scope: Record<string, unknown>): TrpgActionView {
+  const visible = action.visibleExp ? evaluateCgCondition(action.visibleExp, scope) : true;
+  const enabled = action.enableExp
+    ? evaluateCgCondition(action.enableExp, scope)
+    : (!action.requiresItem || (state.items[action.requiresItem] ?? 0) > 0);
+  return { action, visible, enabled, locked: visible && !enabled };
+}
+
+/**
+ * 该让玩家看见的动作（含「看得见但点不动」的）。
+ *
+ * 两档刻意分开：
+ * - `visible=false` 的动作**在服务端就挡掉**，不下发客户端 —— 否则玩家从网络包里
+ *   就能看见还没该出现的彩蛋，那 visibleExp 就白写了。
+ * - `visible=true` 但 `enabled=false` 的**照常下发**，带 `locked` 标志。这是参考系
+ *   JSK / 1room 的共同做法：未解锁的槽位不清空，让玩家看得见「这里还有东西」。
+ */
+export function getActionViews(scenario: TrpgScenario, state: TrpgState): TrpgActionView[] {
   const location = getLocation(scenario, state);
   if (!location) return [];
-  return location.availableActions.filter((a) => !a.requiresItem || (state.items[a.requiresItem] ?? 0) > 0);
+  const scope = stateForConditions(state);
+  return location.availableActions
+    .map((a) => viewOf(a, state, scope))
+    .filter((v) => v.visible);
+}
+
+/**
+ * 只出「可见 **且** 可用」的动作 —— 这是改造前 `getAvailableActions` 的语义
+ * （旧实现按 requiresItem 过滤，滤掉的正是"做不了的"）。签名与行为保持不变。
+ */
+export function getAvailableActions(scenario: TrpgScenario, state: TrpgState): TrpgAction[] {
+  return getActionViews(scenario, state)
+    .filter((v) => v.enabled)
+    .map((v) => v.action);
 }
 
 export function itemDiceBonus(scenario: TrpgScenario, items: Record<string, number>): number {

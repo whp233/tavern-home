@@ -17,7 +17,7 @@ import { rollDice } from '../../src/core/trpg/dice.ts';
 import {
   createInitialState,
   getAction,
-  getAvailableActions,
+  getActionViews,
   resolveActionStep,
 } from '../../src/core/trpg/trpgRuntime.ts';
 import type {
@@ -93,11 +93,18 @@ async function listProviderOverrides(env: TrpgRouteEnv): Promise<ProviderOverrid
 
 function sessionView(session: TrpgSession) {
   const scenario = getScenario(session.scenarioId);
+  const views = scenario ? getActionViews(scenario, session.state) : [];
   return {
     sessionId: session.id,
     scenarioId: session.scenarioId,
     state: session.state,
-    availableActions: scenario ? getAvailableActions(scenario, session.state) : [],
+    // 场景选项系统（2026-09-24）：下发「看得见的」动作 + 标志位，由前端决定画什么。
+    // 服务端仍会挡掉 visibleExp 为假的（不能从网络包里漏彩蛋）；但**看得见却点不动的**
+    // 照常下发，带 locked 标志 —— 参考系 JSK / 1room 都保留未解锁槽位，
+    // 让玩家看得见「这里还有东西」，而不是直接消失。
+    actions: views,
+    // 兼容旧调用方；跑一个版本后再撤。
+    availableActions: views.filter((v) => v.enabled).map((v) => v.action),
     ended: session.state.phase !== 'active',
   };
 }
@@ -227,7 +234,11 @@ export async function handleTrpgRoutes(request: Request, env: TrpgRouteEnv, url:
     }
 
     // 会话详情
-    if (rest.startsWith('session/') && request.method === 'GET' && !rest.includes('/')) {
+    // ⚠️ 修 2026-09-24：原判据 `!rest.includes('/')` 恒为假 —— rest 此时就是 `session/<id>`，
+    // 本身就含 `/`，所以这个分支从来没进过，GET /session/<id> 一律 404。
+    // 前端每次行动后都靠它刷新动作列表，因此表现为「点了动作，按钮不变」。
+    if (rest.startsWith('session/') && request.method === 'GET'
+        && !rest.slice('session/'.length).includes('/')) {
       const id = decodeURIComponent(rest.slice('session/'.length));
       const session = sessions.get(id);
       if (!session) return json(request, env, { success: false, error: '会话不存在或已过期' }, 404);
@@ -247,6 +258,17 @@ export async function handleTrpgRoutes(request: Request, env: TrpgRouteEnv, url:
       const overridePrefs = typeof body.preferences === 'string' ? body.preferences.trim().slice(0, 2000) : undefined;
       if (overridePrefs !== undefined) session.custom = { ...(session.custom || {}), preferences: overridePrefs || undefined };
       const extra = session.custom ? { preferences: session.custom.preferences, charCards: session.custom.charCards } : undefined;
+
+      // 门禁在服务端也要判（2026-09-24）：enableExp 不能只是画个灰。
+      // 否则前端把按钮置灰、脚本照样能 POST 上来 —— 那 visibleExp / enableExp 就只是装饰。
+      // 判定与展示共用同一份 getActionViews，不存在两套逻辑漂移的可能。
+      // 顺序：先判门禁再跑模型 —— 没解锁的动作不该白烧一次生成。
+      const gateScenario = getScenario(session.scenarioId);
+      if (gateScenario) {
+        const view = getActionViews(gateScenario, session.state).find((v) => v.action.id === actionId);
+        if (!view) return json(request, env, { success: false, error: '当前地点没有这个动作' }, 400);
+        if (!view.enabled) return json(request, env, { success: false, error: '这个动作还没解锁' }, 400);
+      }
 
       const { result } = await runAction(env, session.scenarioId, session.state, actionId, provider, request.signal, extra);
       result.sessionId = session.id;

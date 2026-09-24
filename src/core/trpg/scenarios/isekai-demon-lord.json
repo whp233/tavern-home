@@ -139,6 +139,7 @@
           "kind": "travel",
           "staminaCost": 15,
           "timeCost": 2,
+          "enableExp": "flags.trial_passed === true",
           "stateChanges": {
             "locationId": "throne_room",
             "unlockLocation": "throne_room"
@@ -181,6 +182,7 @@
           "kind": "story",
           "staminaCost": 5,
           "timeCost": 1,
+          "visibleExp": "flags.trial_passed === true",
           "stateChanges": {
             "trust": 5
           }

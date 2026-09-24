@@ -42,11 +42,25 @@ type TrpgState = {
   phase: 'active' | 'victory' | 'failure' | 'ending';
 };
 
+// 场景选项系统（2026-09-24）：服务端下发**全量**动作 + 标志位。
+type TrpgActionView = {
+  action: TrpgAction;
+  /** 该不该出现在列表里 */
+  visible: boolean;
+  /** 出现了但能不能点 */
+  enabled: boolean;
+  /** 看得见但点不动 = 「未開放」槽位 */
+  locked: boolean;
+};
+
 type TrpgSessionView = {
   sessionId: string;
   scenarioId: string;
   state: TrpgState;
-  availableActions: TrpgAction[];
+  /** 全量动作 + 标志位（新）。缺省时回落到下面那个字段。 */
+  actions?: TrpgActionView[];
+  /** 旧字段：只有「能做的」。留作回落，后端撤掉后再删。 */
+  availableActions?: TrpgAction[];
   ended: boolean;
 };
 
@@ -406,30 +420,47 @@ export default function TrpgRoom({ base, envOk, onGoBack }: { base: string; envO
           )}
 
           {/*  行动按钮 / 结局结算  */}
-          {session.state.phase === 'active' ? (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-              {session.availableActions.map((a) => (
-                <button
-                  key={a.id}
-                  className="serc"
-                  onClick={() => doAction(a)}
-                  disabled={acting}
-                  title={a.description}
-                  style={{
-                    ...pillStyle,
-                    padding: '10px 18px',
-                    background: acting ? 'var(--scale-0)' : 'var(--card-bg)',
-                    color: 'var(--ink-body)',
-                    border: '1px solid var(--line-soft)',
-                    opacity: acting ? 0.6 : 1,
-                  }}
-                >
-                  {a.label}
-                  {a.difficulty ? `（DC ${a.difficulty}）` : ''}
-                </button>
-              ))}
-            </div>
-          ) : (
+          {session.state.phase === 'active' ? (() => {
+            // 参考系 JSK / 1room 的共同做法：未解锁的槽位**不清空**，
+            // 让玩家看得见「这里还有东西」，而不是直接消失。
+            const views = session.actions
+              ?? (session.availableActions ?? []).map((a) => ({ action: a, visible: true, enabled: true, locked: false }));
+            const shown = views.filter((v) => v.visible);
+            const lockedCount = shown.filter((v) => v.locked).length;
+            return (
+              <>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                  {shown.map((v) => (
+                    <button
+                      key={v.action.id}
+                      className="serc"
+                      onClick={() => doAction(v.action)}
+                      disabled={acting || !v.enabled}
+                      title={v.locked ? `${v.action.description}（未开放）` : v.action.description}
+                      style={{
+                        ...pillStyle,
+                        padding: '10px 18px',
+                        background: acting ? 'var(--scale-0)' : 'var(--card-bg)',
+                        color: v.enabled ? 'var(--ink-body)' : 'var(--ink2)',
+                        border: v.locked ? '1px dashed var(--line-soft)' : '1px solid var(--line-soft)',
+                        opacity: acting ? 0.6 : (v.enabled ? 1 : 0.4),
+                        cursor: v.enabled && !acting ? 'pointer' : 'not-allowed',
+                      }}
+                    >
+                      {v.action.label}
+                      {v.locked ? ' 🔒' : ''}
+                      {v.action.difficulty ? `（DC ${v.action.difficulty}）` : ''}
+                    </button>
+                  ))}
+                </div>
+                {lockedCount > 0 ? (
+                  <div style={{ marginTop: 8, fontSize: 12, color: 'var(--ink2)' }}>
+                    还有 {lockedCount} 个动作没解锁 🔒
+                  </div>
+                ) : null}
+              </>
+            );
+          })() : (
             <div className="card" style={{ ...cardStyle, padding: '18px 20px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--ink-deep)' }}>
                 {result?.ending ? `结局：${result.ending.name}` : '本局结束'}

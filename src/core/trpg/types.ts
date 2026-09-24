@@ -70,6 +70,31 @@ export interface TrpgAction {
   keyEventId?: string;
   requiresItem?: string;
   stateChanges?: TrpgStateChanges;
+
+  // ── 场景选项系统（2026-09-24 赋能）：全部可选，旧剧本零改动 ──────────
+  // 参考 1room《ActMenuItem》的双档设计：显不显示 / 能不能点，是两件事。
+  /** 显不显示。缺省 = 恒真（等价于改造前行为）。 */
+  visibleExp?: string;
+  /** 能不能点。缺省 = 沿用 requiresItem 判定（等价于改造前行为）。 */
+  enableExp?: string;
+  /**
+   * 预留：LLM 提示词片段路径（想让该动作的叙述有专属引导时用）。
+   * ⚠️ 目前**没有消费方** —— gmPrompt.ts 还不读它，写了不生效。
+   * 先落进类型是为了剧本可以先标注；接线时改 gmPrompt.buildGmRequest。
+   */
+  promptRef?: string;
+}
+
+// 动作视图：服务端下发全量动作 + 标志位，由前端决定怎么画。
+// 与 TrpgAction 分开，是为了不改旧函数签名（getAvailableActions 原样保留）。
+export interface TrpgActionView {
+  action: TrpgAction;
+  /** 该不该出现在列表里（false = 玩家不该知道有这东西） */
+  visible: boolean;
+  /** 出现了但能不能点 */
+  enabled: boolean;
+  /** visible && !enabled —— 前端渲染「未開放」槽位用（灰 + 锁标，但不清空） */
+  locked: boolean;
 }
 
 export interface TrpgLocation {
