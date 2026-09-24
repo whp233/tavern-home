@@ -24,7 +24,12 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+      # NOTE: setup-android@v3 默认 packages 为 "tools platform-tools"，
+      # 但 Google 已从 SDK 仓库移除 "tools" 包 -> sdkmanager 退出 1（2026-09-18 起红）。
+      # 只装 platform-tools（+ 构建所需 build-tools/platforms 由 Gradle 按需拉取）。
       - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
 
       - name: npm install
         run: npm install
